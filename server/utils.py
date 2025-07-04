@@ -1,5 +1,7 @@
 import uuid
 import base64
+import json
+from datetime import datetime
 from flask import jsonify
 from Cryptodome.PublicKey import RSA
 from Cryptodome.Cipher import PKCS1_v1_5
@@ -26,13 +28,23 @@ def encrypt_password(raw_password: str) -> str:
     base64_password = base64.b64encode(raw_password.encode()).decode()
     return generate_password_hash(base64_password)
 
+# 自定义JSON序列化器，处理datetime对象
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime):
+            return obj.strftime('%Y-%m-%d %H:%M:%S')
+        return super().default(obj)
+
 # 标准响应格式
 def success_response(data=None, message="操作成功", code=0):
-    return jsonify({
+    response = {
         "code": code,
         "message": message,
         "data": data
-    })
+    }
+    # 使用自定义的JSON序列化器
+    json_str = json.dumps(response, cls=DateTimeEncoder, ensure_ascii=False)
+    return json_str, 200, {'Content-Type': 'application/json; charset=utf-8'}
 
 # 错误响应格式
 def error_response(message="操作失败", code=500, details=None):
@@ -43,4 +55,5 @@ def error_response(message="操作失败", code=500, details=None):
     }
     if details:
         response["details"] = details
-    return jsonify(response), code if code >= 400 else 500
+    json_str = json.dumps(response, cls=DateTimeEncoder, ensure_ascii=False)
+    return json_str, code if code >= 400 else 500, {'Content-Type': 'application/json; charset=utf-8'}

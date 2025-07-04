@@ -1,3 +1,11 @@
+# 解决MySQL驱动问题 - 使用PyMySQL作为MySQLdb的替代
+try:
+    import pymysql
+    pymysql.install_as_MySQLdb()
+    print("✅ 已启用 PyMySQL 作为 MySQL 驱动")
+except ImportError:
+    print("⚠️  PyMySQL 未安装，如果使用MySQL请安装: pip install PyMySQL")
+
 import database
 import jwt
 import os
@@ -8,7 +16,7 @@ from routes import register_routes
 from dotenv import load_dotenv
 
 # 加载环境变量
-load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'docker', '.env'))
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env'))
 
 app = Flask(__name__)
 # 启用CORS，允许前端访问
@@ -62,4 +70,4 @@ def login():
 
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000,debug=True)
+    app.run(host='0.0.0.0', port=5001, debug=True)

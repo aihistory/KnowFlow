@@ -1,0 +1,42 @@
+version: '3.8'
+
+services:
+  mineru-api:
+    image: zxwei/mineru-api-full:v1.0.0
+    container_name: mineru-api
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+      - "30000:30000"
+    shm_size: '32g'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      # 可选：持久化存储配置和数据
+      - mineru_data:/app/data
+      - mineru_models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mineru_data:
+    driver: local
+  mineru_models:
+    driver: local
+
+networks:
+  default:
+    name: mineru-network
+    driver: bridge 

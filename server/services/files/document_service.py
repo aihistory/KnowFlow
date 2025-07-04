@@ -26,6 +26,38 @@ class DocumentService(BaseService):
         """
         doc_id = get_uuid()
         
+        # 构建默认的解析器配置，包含分块配置
+        default_parser_config = {
+            "pages": [[1, 1000000]],
+            "chunking_config": {
+                "strategy": "smart",
+                "chunk_token_num": 256,
+                "min_chunk_tokens": 10
+            }
+        }
+        
+        # 如果提供了自定义配置，则合并
+        if parser_config:
+            if isinstance(parser_config, dict):
+                default_parser_config.update(parser_config)
+            else:
+                # 如果是字符串，尝试解析
+                try:
+                    import json
+                    custom_config = json.loads(parser_config) if isinstance(parser_config, str) else parser_config
+                    default_parser_config.update(custom_config)
+                except (json.JSONDecodeError, TypeError):
+                    # 解析失败，使用默认配置
+                    pass
+        
+        # 确保分块配置存在
+        if 'chunking_config' not in default_parser_config:
+            default_parser_config['chunking_config'] = {
+                "strategy": "smart",
+                "chunk_token_num": 256,
+                "min_chunk_tokens": 10
+            }
+        
         # 构建基本文档数据
         doc_data = {
             'id': doc_id,
@@ -36,7 +68,7 @@ class DocumentService(BaseService):
             'type': file_type,
             'created_by': created_by or 'system',
             'parser_id': parser_id or '',
-            'parser_config': parser_config or {"pages": [[1, 1000000]]},
+            'parser_config': default_parser_config,
             'source_type': 'local',
             'token_num': 0,
             'chunk_num': 0,

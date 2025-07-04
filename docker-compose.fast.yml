@@ -1,0 +1,41 @@
+version: '3.8'
+
+# 快速部署版本 - 使用基础版镜像，体积更小，下载更快
+services:
+  mineru-api:
+    image: zxwei/mineru-api:v1.0.0  # 基础版镜像，约2-3GB
+    container_name: mineru-api
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+    shm_size: '16g'  # 减少内存分配
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+        limits:
+          cpus: '4'
+          memory: 6G
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - mineru_data:/app/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+volumes:
+  mineru_data:
+    driver: local
+
+networks:
+  default:
+    name: mineru-fast-network
+    driver: bridge

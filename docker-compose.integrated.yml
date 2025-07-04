@@ -1,0 +1,107 @@
+services:
+  # MinerU 服务
+  mineru-api:
+    image: zxwei/mineru-api-full:v1.0.0
+    container_name: mineru-api
+    restart: unless-stopped
+    ports:
+      - "8888:8888"
+      - "30000:30000"
+    shm_size: '32g'
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+    volumes:
+      - mineru_data:/app/data
+      - mineru_models:/app/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8888/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    networks:
+      - management_network
+
+  # KnowFlow 前端服务
+  frontend:
+    container_name: knowflow-frontend
+    image: zxwei/knowflow-web:v0.5.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    environment:
+      - API_BASE_URL=/api 
+    networks:
+      - management_network
+
+  # KnowFlow 后端服务
+  backend:
+    container_name: knowflow-backend
+    image: zxwei/knowflow-server:v1.1.1
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: backend
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    ports:
+      - "5000:5000"
+    environment:
+      - RAGFLOW_API_KEY=${RAGFLOW_API_KEY}
+      - RAGFLOW_BASE_URL=${RAGFLOW_BASE_URL}
+      - DB_HOST=${DB_HOST}
+      - MINIO_HOST=${MINIO_HOST}
+      - ES_HOST=${ES_HOST}
+      - ES_PORT=${ES_PORT}
+      - FLASK_ENV=development
+      - CORS_ALLOWED_ORIGINS=http://frontend
+      - GOTENBERG_URL=http://gotenberg:3000 
+      - MANAGEMENT_ADMIN_USERNAME=${MANAGEMENT_ADMIN_USERNAME:-admin}
+      - MANAGEMENT_ADMIN_PASSWORD=${MANAGEMENT_ADMIN_PASSWORD:-12345678}
+      - MANAGEMENT_JWT_SECRET=${MANAGEMENT_JWT_SECRET:-12345678}
+      # MinerU 服务配置
+      - MINERU_API_URL=http://mineru-api:8888
+    volumes:
+      - ./server/services/config:/app/services/config:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - mineru-api
+    networks:
+      - management_network
+
+  # Gotenberg 文档转换服务
+  gotenberg:
+    image: gotenberg/gotenberg:8
+    ports:
+      - "3000:3000"
+    networks:
+      - management_network
+
+volumes:
+  mineru_data:
+    driver: local
+  mineru_models:
+    driver: local
+
+networks:
+  management_network:
+    driver: bridge 

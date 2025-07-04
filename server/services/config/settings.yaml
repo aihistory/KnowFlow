@@ -71,33 +71,35 @@ mineru:
     #           或 http://mineru-api:8888 (Docker Compose网络)
     url: "http://localhost:8888"
     
-    # HTTP 请求超时时间（秒）
-    timeout: 30000
+    # HTTP 请求超时时间（秒）- 减少超时时间避免长时间等待
+    timeout: 300
   
   # 默认使用的后端类型
   # 选项: pipeline, vlm-transformers,  vlm-sglang-client
+  # 使用 pipeline 后端，最稳定
   default_backend: "pipeline"
   
   # Pipeline 后端请求参数
   pipeline:
     # 解析方法: auto, txt, ocr
-    parse_method: "auto"
+    # 使用更稳定的 txt 模式，避免复杂的模型加载
+    parse_method: "txt"
     
     # 文档语言（提升OCR准确率）
     lang: "ch"
     
-    # 是否启用公式解析
-    formula_enable: true
+    # 暂时关闭复杂功能，避免模型加载问题
+    formula_enable: false
     
-    # 是否启用表格解析
-    table_enable: true
+    # 暂时关闭表格解析，避免模型加载问题
+    table_enable: false
   
   # VLM 后端配置
   vlm:
     sglang:
       # SGLang 服务器地址（vlm-sglang-client 后端需要）
       # Docker部署时同样需要使用宿主机IP或容器网络地址
-      server_url: "http://host.docker.internal:30000"
+      server_url: "http://localhost:30000"
 
 
 
