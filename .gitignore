@@ -195,3 +195,18 @@ dist
 
 # Default backup dir
 backup
+
+
+# 本地环境和缓存
+knowflow/.env.backup.*
+mineru_cache/
+mineru_output/
+
+# 本地配置文件
+nginx_webhook.conf
+knowflow.service
+install_service.sh
+AUTO_START_README.md
+
+# GitHub workflows（如果不想公开）
+.github/workflows/sync-upstream.yml
