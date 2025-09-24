@@ -210,3 +210,5 @@ AUTO_START_README.md
 
 # GitHub workflows（如果不想公开）
 .github/workflows/sync-upstream.yml
+start_knowflow.sh
+start_knowflow.sh
