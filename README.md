@@ -4,7 +4,6 @@
 
 # KnowFlow - 企业级智能知识库解决方案
 
-
 🌐 **官方网站**: [https://www.knowflowchat.cn](https://knowflowchat.cn)
 
 📺 **B站视频**: [https://www.bilibili.com/video/BV1Vfg8zDEUf/](https://www.bilibili.com/video/BV1Vfg8zDEUf/)
@@ -31,12 +30,13 @@
 | 功能特性 | 社区版 (开源) | 商业版 |
 |---------|-------------|--------|
 | **基础功能** | ✅  | ✅  |
-| **MinerU 解析** | ✅  | ✅ 支持 MinerU 最新版本镜像 |
+| **MinerU 解析** | ✅ 支持老版本  | ✅ 支持 MinerU 最新版本镜像 |
 | **小红书 Dots 解析** | ❌ | ✅  |
+| **PaddleOCR-VL 解析** | ❌ | ✅  |
 | **多模态图片理解** | ❌ | ✅  |
 | **RAG 评估系统** | ❌ | ✅  |
 | **权限管理** | RBAC 简略版 | ✅ RBAC 完整版本，额外作用于agent、聊天助手、文件等 |
-| **分块策略** | 正则、语义、标题、父子分块 | ✅ 解析分块全面优化，新增标题层级切割以及标题自动补充 |
+| **分块策略** | 正则、语义、标题、父子分块 | ✅ 解析分块全面优化，新增标题层级切割以及标题自动补充、父子分块支持编辑 |
 | **版本兼容** | 适配 v0.20.1 | ✅ 适配 RAGFlow v0.20.5 |
 | **企业集成** | ✅ 企业微信集成 | ✅ Dify 深度集成 |
 | **高级分析** | ❌ | ✅ 使用统计分析 |
@@ -628,9 +628,9 @@ curl http://localhost:8888/health
 **文档解析 API**
 ```bash
 # 上传文档进行解析
-curl -X POST "http://localhost:8888/parse" \
+curl -X POST "http://localhost:8888/file_parse" \
      -F "file=@document.pdf" \
-     -F "mode=pipeline"
+     -F "backend=pipeline"
 ```
 
 
