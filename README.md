@@ -628,9 +628,9 @@ curl http://localhost:8888/health
 **文档解析 API**
 ```bash
 # 上传文档进行解析
-curl -X POST "http://localhost:8888/parse" \
+curl -X POST "http://localhost:8888/file_parse" \
      -F "file=@document.pdf" \
-     -F "mode=pipeline"
+     -F "backend=pipeline"
 ```
 
 
