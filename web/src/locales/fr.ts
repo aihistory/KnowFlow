@@ -483,6 +483,7 @@ export default {
       system: 'Système',
       logout: 'Déconnexion',
       api: 'API',
+      management: 'Gestion',
       username: "Nom d'utilisateur",
       usernameMessage: "Veuillez saisir votre nom d'utilisateur !",
       photo: 'Votre photo',
@@ -1162,6 +1163,7 @@ export default {
       datatype: 'Type MIME de la requête HTTP',
       insertVariableTip: `Entrer / Insérer des variables`,
       historyversion: 'Historique des versions',
+      log: 'Journal',
       filename: 'Nom du fichier',
       version: {
         created: 'Créé',

@@ -22,6 +22,10 @@ from api.db.db_models import DB, Document, Knowledgebase, Tenant, User, UserTena
 from api.db.services.common_service import CommonService
 from api.utils import current_timestamp, datetime_format
 
+# 导入 RBAC 相关功能（延迟导入避免循环依赖）
+import logging
+logger = logging.getLogger(__name__)
+
 
 class KnowledgebaseService(CommonService):
     """Service class for managing knowledge base operations.
@@ -48,7 +52,8 @@ class KnowledgebaseService(CommonService):
         """Check if a knowledge base can be deleted by a specific user.
 
         This method verifies whether a user has permission to delete a knowledge base
-        by checking if they are the creator of that knowledge base.
+        by first checking RBAC permissions, and if no RBAC permission exists,
+        falls back to checking if they are the creator of that knowledge base.
 
         Args:
             kb_id (str): The unique identifier of the knowledge base to check.
@@ -63,12 +68,29 @@ class KnowledgebaseService(CommonService):
             True
 
         Note:
-            - This method only checks creator permissions
-            - A return value of False can mean either:
-                1. The knowledge base doesn't exist
-                2. The user is not the creator of the knowledge base
+            - Priority 1: Check RBAC admin permissions (including super admin)
+            - Priority 2: Fallback to original creator permission check
+            - A return value of False means the user has neither RBAC permission nor creator permission
         """
-        # Check if a knowledge base can be deleted by a user
+        # Priority 1: Check RBAC permissions first
+        try:
+            from api.utils.rbac_utils import check_rbac_permission, RBACResourceType, RBACPermissionType
+            # Check for admin permission through RBAC system (includes super admin)
+            has_rbac_permission = check_rbac_permission(
+                user_id=user_id,
+                resource_type=RBACResourceType.KNOWLEDGEBASE,
+                resource_id=kb_id,
+                permission_type=RBACPermissionType.KB_ADMIN
+                # 不传tenant_id，让RBAC底层使用default
+            )
+            if has_rbac_permission:
+                return True
+        except Exception as e:
+            # If RBAC check fails, log the error but continue to original logic
+            import logging
+            logging.warning(f"RBAC permission check failed for user {user_id} on KB {kb_id}: {e}")
+        
+        # Priority 2: Fallback to original creator permission check
         docs = cls.model.select(
             cls.model.id).where(cls.model.id == kb_id, cls.model.created_by == user_id).paginate(0, 1)
         docs = docs.dicts()
@@ -197,6 +219,7 @@ class KnowledgebaseService(CommonService):
                 resource_type=RBACResourceType.KNOWLEDGEBASE,
                 resource_id=kb_id,
                 permission_type=RBACPermissionType.KB_READ
+                # 不传tenant_id，让RBAC底层使用default
             )
             print(f"KB {kb_id}: RBAC check result={has_kb_permission}")
             
@@ -455,12 +478,30 @@ class KnowledgebaseService(CommonService):
     @classmethod
     @DB.connection_context()
     def accessible(cls, kb_id, user_id):
-        # Check if a knowledge base is accessible by a user
-        # Args:
-        #     kb_id: Knowledge base ID
-        #     user_id: User ID
-        # Returns:
-        #     Boolean indicating accessibility
+        """Check if a knowledge base is accessible by a user.
+
+        This method checks accessibility using RBAC permissions first,
+        then falls back to tenant-based permission checking.
+
+        Args:
+            kb_id: Knowledge base ID
+            user_id: User ID
+        Returns:
+            Boolean indicating accessibility
+        """
+        # 尝试使用 RBAC 权限检查（延迟导入避免循环依赖）
+        try:
+            from api.utils.rbac_utils import check_rbac_permission, RBACPermissionType, RBACResourceType
+
+            # 检查用户是否有读权限
+            if check_rbac_permission(user_id, RBACResourceType.KNOWLEDGEBASE, kb_id, RBACPermissionType.KB_READ):
+                return True
+
+            logger.debug(f"RBAC check failed for user {user_id} on kb {kb_id}, falling back to tenant check")
+        except Exception as e:
+            logger.warning(f"RBAC权限检查失败，回退到租户检查: {e}")
+
+        # 回退到原有的租户检查
         docs = cls.model.select(
             cls.model.id).join(UserTenant, on=(UserTenant.tenant_id == Knowledgebase.tenant_id)
                                ).where(cls.model.id == kb_id, UserTenant.user_id == user_id).paginate(0, 1)

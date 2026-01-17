@@ -141,7 +141,7 @@ class RBACInitializer:
                 name VARCHAR(100) NOT NULL COMMENT '角色名称',
                 code VARCHAR(50) NOT NULL COMMENT '角色代码',
                 description TEXT COMMENT '角色描述',
-                role_type ENUM('super_admin', 'admin', 'editor', 'viewer', 'user', 'guest') NOT NULL COMMENT '角色类型',
+                role_type ENUM('super_admin', 'admin', 'editor', 'viewer', 'user') NOT NULL COMMENT '角色类型',
                 is_system BOOLEAN DEFAULT FALSE COMMENT '是否为系统角色',
                 tenant_id VARCHAR(50) NULL COMMENT '租户ID',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -366,7 +366,7 @@ class RBACInitializer:
                     ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (
                     admin_user_id, '系统管理员', 'qwen-plus', 'BAAI/bge-large-zh-v1.5', 'local',
-                    'local', 'BAAI/bge-reranker-v2-m3', 'manual,naive,qa,table,resume,laws,book,presentation,picture,one,knowledge_graph',
+                    'local', 'BAAI/bge-reranker-v2-m3', 'naive:General,qa:Q&A,resume:Resume,manual:Manual,table:Table,paper:Paper,book:Book,laws:Laws,presentation:Presentation,picture:Picture,one:One,audio:Audio,email:Email,tag:Tag,mineru:MinerU,dots:DOTS',
                     1000000, '1', create_time, create_date, create_time, create_date
                 ))
                 

@@ -24,7 +24,7 @@ class KnowledgebaseService:
         return mysql.connector.connect(**DB_CONFIG)
 
     @classmethod
-    def get_knowledgebase_list(cls, page=1, size=10, name="", sort_by="create_time", sort_order="desc"):
+    def get_knowledgebase_list(cls, page=1, size=10, name="", sort_by="create_time", sort_order="desc", current_user_id=None, user_role=None):
         """获取知识库列表"""
         conn = cls._get_db_connection()
         cursor = conn.cursor(dictionary=True)
@@ -46,14 +46,35 @@ class KnowledgebaseService:
                 k.update_date,
                 k.doc_num,
                 k.language,
-                k.permission
+                k.permission,
+                k.parser_id,
+                k.created_by
             FROM knowledgebase k
         """
+        
+        # 构建WHERE子句和参数
+        where_clauses = []
         params = []
 
         if name:
-            query += " WHERE k.name LIKE %s"
+            where_clauses.append("k.name LIKE %s")
             params.append(f"%{name}%")
+        
+        # 添加基于角色的权限过滤
+        if current_user_id and user_role:
+            if user_role == 'admin':
+                # 管理员只能看到自己创建的知识库
+                where_clauses.append("k.created_by = %s")
+                params.append(current_user_id)
+            elif user_role == 'user':
+                # 普通用户只能看到自己创建的或有权限访问的知识库
+                where_clauses.append("k.created_by = %s")
+                params.append(current_user_id)
+            # super_admin 不添加过滤条件，可以看到所有知识库
+        
+        # 组合WHERE子句
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
 
         # 添加查询排序条件
         query += f" {sort_clause}"
@@ -80,11 +101,18 @@ class KnowledgebaseService:
                     except ValueError:
                         result["create_date"] = ""
 
-        # 获取总数
-        count_query = "SELECT COUNT(*) as total FROM knowledgebase"
+        # 获取总数（重新构建不包含分页参数的params）
+        count_params = []
         if name:
-            count_query += " WHERE name LIKE %s"
-        cursor.execute(count_query, params[:1] if name else [])
+            count_params.append(f"%{name}%")
+        if current_user_id and user_role:
+            if user_role in ['admin', 'user']:
+                count_params.append(current_user_id)
+        
+        count_query = "SELECT COUNT(*) as total FROM knowledgebase k"
+        if where_clauses:
+            count_query += " WHERE " + " AND ".join(where_clauses)
+        cursor.execute(count_query, count_params)
         total = cursor.fetchone()["total"]
 
         cursor.close()
@@ -250,32 +278,45 @@ class KnowledgebaseService:
             else:
                 print(f"使用传入的 creator_id 作为 tenant_id 和 created_by: {tenant_id}")
 
-            # --- 获取动态 embd_id ---
+            # --- 获取用户配置的向量模型（与RAGFlow前端保持一致）---
             dynamic_embd_id = None
             default_embd_id = "bge-m3"  # Fallback default
             try:
-                query_embedding_model = """
-                    SELECT llm_name
-                    FROM tenant_llm
-                    WHERE model_type = 'embedding' AND update_time IS NOT NULL AND tenant_id = %s
-                    ORDER BY update_time DESC
-                    LIMIT 1
+                # 直接从tenant表获取用户配置的向量模型（与RAGFlow前端api/apps/kb_app.py第75行保持一致）
+                query_tenant_embedding = """
+                    SELECT embd_id
+                    FROM tenant
+                    WHERE id = %s AND embd_id IS NOT NULL AND embd_id != ''
                 """
-                cursor.execute(query_embedding_model, (tenant_id,))
-                embedding_model = cursor.fetchone()
+                cursor.execute(query_tenant_embedding, (tenant_id,))
+                tenant_config = cursor.fetchone()
 
-                if embedding_model and embedding_model.get("llm_name"):
-                    dynamic_embd_id = embedding_model["llm_name"]
-                    # 对硅基流动平台进行特异性处理
-                    if dynamic_embd_id == "netease-youdao/bce-embedding-base_v1":
-                        dynamic_embd_id = "BAAI/bge-m3"
-                    print(f"动态获取到的 embedding 模型 ID: {dynamic_embd_id}")
+                if tenant_config and tenant_config.get("embd_id"):
+                    dynamic_embd_id = tenant_config["embd_id"]
+                    print(f"从租户配置获取到的向量模型 ID: {dynamic_embd_id}")
                 else:
-                    dynamic_embd_id = default_embd_id
-                    print(f"未在 tenant_llm 表中找到 embedding 模型, 使用默认值: {dynamic_embd_id}")
+                    # 如果用户未配置向量模型，尝试获取超级管理员的默认配置
+                    query_admin_tenant = """
+                        SELECT t.embd_id
+                        FROM tenant t
+                        JOIN user u ON t.id = u.id
+                        WHERE u.email = 'admin@gmail.com' 
+                        AND t.embd_id IS NOT NULL AND t.embd_id != ''
+                        ORDER BY u.create_time ASC
+                        LIMIT 1
+                    """
+                    cursor.execute(query_admin_tenant)
+                    admin_config = cursor.fetchone()
+                    
+                    if admin_config and admin_config.get("embd_id"):
+                        dynamic_embd_id = admin_config["embd_id"]
+                        print(f"从超级管理员配置获取到的向量模型 ID: {dynamic_embd_id}")
+                    else:
+                        dynamic_embd_id = default_embd_id
+                        print(f"未找到用户和管理员配置的向量模型，使用默认值: {dynamic_embd_id}")
             except Exception as e:
                 dynamic_embd_id = default_embd_id
-                print(f"查询 embedding 模型失败: {str(e)}，使用默认值: {dynamic_embd_id}")
+                print(f"查询向量模型配置失败: {str(e)}，使用默认值: {dynamic_embd_id}")
                 traceback.print_exc()  # Log the full traceback for debugging
 
             current_time = datetime.now()
@@ -336,7 +377,7 @@ class KnowledgebaseService:
                     0,  # chunk_num
                     0.7,  # similarity_threshold
                     0.3,  # vector_similarity_weight
-                    "naive",  # parser_id
+                    data.get("parser_id", "naive"),  # parser_id
                     default_parser_config,  # parser_config
                     0,  # pagerank
                     "1",  # status
@@ -649,10 +690,17 @@ class KnowledgebaseService:
                 create_time = int(current_datetime.timestamp() * 1000)  # 毫秒级时间戳
                 current_date = current_datetime.strftime("%Y-%m-%d %H:%M:%S")  # 格式化日期字符串
 
-                # 设置默认值
-                default_parser_id = "naive"
+                # 获取知识库的parser_id和parser_config，如果没有则使用默认值
+                kb_parser_id = kb.get("parser_id", "mineru")
+                kb_parser_config = kb.get("parser_config")
+                if isinstance(kb_parser_config, str):
+                    try:
+                        kb_parser_config = json.loads(kb_parser_config)
+                    except:
+                        kb_parser_config = None
+                
                 default_parser_config = json.dumps(
-                    {
+                    kb_parser_config or {
                         "chunk_token_num": 512,
                         "delimiter": "\n!?;。；！？",
                         "auto_keywords": 0,
@@ -671,16 +719,22 @@ class KnowledgebaseService:
                         thumbnail, kb_id, parser_id, parser_config, source_type,
                         type, created_by, name, location, size,
                         token_num, chunk_num, progress, progress_msg, process_begin_at,
-                        process_duration, meta_fields, run, status
+                        process_duration, meta_fields, run, status, suffix
                     ) VALUES (
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s
+                        %s, %s, %s, %s, %s
                     )
                 """
 
+                # 从文件名中提取扩展名作为suffix
+                import os
+                file_suffix = os.path.splitext(file_name)[1].lstrip('.').lower() if file_name else file_type.lower()
+                if not file_suffix:
+                    file_suffix = file_type.lower()
+                
                 doc_params = [
                     doc_id,
                     create_time,
@@ -689,7 +743,7 @@ class KnowledgebaseService:
                     current_date,  # ID和时间
                     None,
                     kb_id,
-                    default_parser_id,
+                    kb_parser_id,
                     default_parser_config,
                     default_source_type,  # thumbnail到source_type
                     file_type,
@@ -706,6 +760,7 @@ class KnowledgebaseService:
                     None,
                     "0",
                     "1",  # process_duration到status
+                    file_suffix,  # suffix
                 ]
 
                 cursor.execute(doc_query, doc_params)
@@ -759,83 +814,120 @@ class KnowledgebaseService:
     def delete_document(cls, doc_id):
         """删除文档"""
         try:
-            conn = cls._get_db_connection()
-            cursor = conn.cursor(dictionary=True)
+          conn = cls._get_db_connection()
+          cursor = conn.cursor(dictionary=True)
 
-            # 先检查文档是否存在
-            # check_query = """
-            #     SELECT 
-            #         d.kb_id, 
-            #         kb.created_by AS tenant_id  -- 获取 tenant_id (knowledgebase的创建者)
-            #     FROM document d
-            #     JOIN knowledgebase kb ON d.kb_id = kb.id -- JOIN knowledgebase 表
-            #     WHERE d.id = %s
-            # """
-            check_query = """
-                SELECT 
-                    d.kb_id, 
-                    d.created_by AS tenant_id
-                FROM document d
-                WHERE d.id = %s
-            """
-            cursor.execute(check_query, (doc_id,))
-            doc_data = cursor.fetchone()
+          # 先检查文档是否存在
+          check_query = """
+              SELECT
+                  d.kb_id,
+                  d.created_by AS tenant_id
+              FROM document d
+              WHERE d.id = %s
+          """
+          cursor.execute(check_query, (doc_id,))
+          doc_data = cursor.fetchone()
 
-            if not doc_data:
-                print(f"[INFO] 文档 {doc_id} 在数据库中未找到。")
-                return False
+          if not doc_data:
+              print(f"[INFO] 文档 {doc_id} 在数据库中未找到。")
+              return False
 
-            kb_id = doc_data["kb_id"]
+          kb_id = doc_data["kb_id"]
+          tenant_id_for_cleanup = doc_data["tenant_id"]
 
-            # 删除文件到文档的映射
-            f2d_query = "DELETE FROM file2document WHERE document_id = %s"
-            cursor.execute(f2d_query, (doc_id,))
+          # 1. 删除任务表记录
+          task_query = "DELETE FROM task WHERE doc_id = %s"
+          cursor.execute(task_query, (doc_id,))
+          task_deleted = cursor.rowcount
+          print(f"[DB-SUCCESS] 删除了 {task_deleted} 个任务记录")
 
-            # 删除文档
-            doc_query = "DELETE FROM document WHERE id = %s"
-            cursor.execute(doc_query, (doc_id,))
+          # 2. 删除父子映射表记录
+          parent_child_query = "DELETE FROM parent_child_mapping WHERE doc_id = %s"
+          cursor.execute(parent_child_query, (doc_id,))
+          mapping_deleted = cursor.rowcount
+          print(f"[DB-SUCCESS] 删除了 {mapping_deleted} 个父子映射记录")
 
-            # 更新知识库文档数量
-            update_query = """
-                UPDATE knowledgebase 
-                SET doc_num = doc_num - 1,
-                    update_date = %s
-                WHERE id = %s
-            """
-            current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            cursor.execute(update_query, (current_date, kb_id))
+          # 3. 删除文件到文档的映射
+          f2d_query = "DELETE FROM file2document WHERE document_id = %s"
+          cursor.execute(f2d_query, (doc_id,))
+          f2d_deleted = cursor.rowcount
+          print(f"[DB-SUCCESS] 删除了 {f2d_deleted} 个文件映射记录")
 
-            conn.commit()
-            cursor.close()
-            conn.close()
+          # 4. 删除文档记录
+          doc_query = "DELETE FROM document WHERE id = %s"
+          cursor.execute(doc_query, (doc_id,))
+          print(f"[DB-SUCCESS] 删除了文档记录 {doc_id}")
 
-            es_client = get_es_client()
-            tenant_id_for_cleanup = doc_data["tenant_id"]
+          # 5. 更新知识库文档数量
+          update_query = """
+              UPDATE knowledgebase
+              SET doc_num = doc_num - 1,
+                  update_date = %s
+              WHERE id = %s
+          """
+          current_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+          cursor.execute(update_query, (current_date, kb_id))
+          print(f"[DB-SUCCESS] 更新了知识库 {kb_id} 的文档计数")
 
-            # 删除 Elasticsearch 中的相关文档块
-            if es_client and tenant_id_for_cleanup:
-                es_index_name = f"ragflow_{tenant_id_for_cleanup}"
-                try:
-                    if es_client.indices.exists(index=es_index_name):
-                        query_body = {"query": {"term": {"doc_id": doc_id}}}
-                        resp = es_client.delete_by_query(
-                            index=es_index_name,
-                            body=query_body,
-                            refresh=True,  # 确保立即生效
-                            ignore_unavailable=True,  # 如果索引在此期间被删除
-                        )
-                        deleted_count = resp.get("deleted", 0)
-                        print(f"[ES-SUCCESS] 从索引 {es_index_name} 中删除 {deleted_count} 个与 doc_id {doc_id} 相关的块。")
-                    else:
-                        print(f"[ES-INFO] 索引 {es_index_name} 不存在，跳过 ES 清理 for doc_id {doc_id}。")
-                except Exception as es_err:
-                    print(f"[ES-ERROR] 清理 ES 块 for doc_id {doc_id} (index {es_index_name}) 失败: {str(es_err)}")
+          # 提交数据库事务
+          conn.commit()
+          cursor.close()
+          conn.close()
 
-            return True
+          # 6. 清理Elasticsearch中的数据
+          es_client = get_es_client()
+          if es_client and tenant_id_for_cleanup:
 
+              # 6.1 清理子分块索引
+              es_index_name = f"ragflow_{tenant_id_for_cleanup}"
+              try:
+                  if es_client.indices.exists(index=es_index_name):
+                      query_body = {"query": {"term": {"doc_id": doc_id}}}
+                      resp = es_client.delete_by_query(
+                          index=es_index_name,
+                          body=query_body,
+                          refresh=True,
+                          ignore_unavailable=True,
+                      )
+                      deleted_count = resp.get("deleted", 0)
+                      print(f"[ES-SUCCESS] 从子分块索引 {es_index_name} 中删除 {deleted_count} 个分块")
+                  else:
+                      print(f"[ES-INFO] 子分块索引 {es_index_name} 不存在，跳过清理")
+              except Exception as es_err:
+                  print(f"[ES-ERROR] 清理子分块索引失败: {str(es_err)}")
+
+              # 6.2 清理父分块索引
+              parent_index_name = f"ragflow_{tenant_id_for_cleanup}_parent"
+              try:
+                  if es_client.indices.exists(index=parent_index_name):
+                      query_body = {"query": {"term": {"doc_id": doc_id}}}
+                      resp = es_client.delete_by_query(
+                          index=parent_index_name,
+                          body=query_body,
+                          refresh=True,
+                          ignore_unavailable=True,
+                      )
+                      deleted_parent_count = resp.get("deleted", 0)
+                      print(f"[ES-SUCCESS] 从父分块索引 {parent_index_name} 中删除 {deleted_parent_count} 个父分块")
+                  else:
+                      print(f"[ES-INFO] 父分块索引 {parent_index_name} 不存在，跳过清理")
+              except Exception as es_err:
+                  print(f"[ES-ERROR] 清理父分块索引失败: {str(es_err)}")
+
+          print(f"[SUCCESS] 文档 {doc_id} 删除完成，所有相关数据已清理")
+          return True
+          
         except Exception as e:
-            print(f"[ERROR] 删除文档失败: {str(e)}")
-            raise Exception(f"删除文档失败: {str(e)}")
+          print(f"[ERROR] 删除文档失败: {str(e)}")
+          # 如果数据库操作已开始，尝试回滚
+          try:
+              if 'conn' in locals():
+                  conn.rollback()
+                  cursor.close()
+                  conn.close()
+          except:
+              pass
+          raise Exception(f"删除文档失败: {str(e)}")
 
     @classmethod
     def parse_document(cls, doc_id):
@@ -843,17 +935,121 @@ class KnowledgebaseService:
         conn = None
         cursor = None
         try:
+            # 检查是否为重新解析，如果是则先清理现有数据
+            conn = cls._get_db_connection()
+            cursor = conn.cursor(dictionary=True)
+
+            # 检查文档是否已有分块数据
+            check_query = """
+                SELECT
+                    d.chunk_num,
+                    d.created_by AS tenant_id,
+                    d.name,
+                    d.progress
+                FROM document d
+                WHERE d.id = %s
+            """
+            cursor.execute(check_query, (doc_id,))
+            doc_data = cursor.fetchone()
+
+            if not doc_data:
+                raise Exception("文档不存在")
+
+            # 如果文档已有分块数据（chunk_num > 0），先清理
+            if doc_data["chunk_num"] > 0:
+                print(f"[REPARSE] 检测到文档已有 {doc_data['chunk_num']} 个分块，开始清理数据...")
+                
+                # 1. 重置文档的分块数量为 0
+                reset_query = """
+                    UPDATE document 
+                    SET chunk_num = 0,
+                        progress = 0.0,
+                        progress_msg = '清理现有数据中...'
+                    WHERE id = %s
+                """
+                cursor.execute(reset_query, (doc_id,))
+                print(f"[REPARSE] 已重置文档 {doc_id} 的分块数量为 0")
+
+                # 2. 删除任务表相关记录
+                task_query = "DELETE FROM task WHERE doc_id = %s"
+                cursor.execute(task_query, (doc_id,))
+                task_deleted = cursor.rowcount
+                print(f"[REPARSE] 删除了 {task_deleted} 个历史任务记录")
+
+                # 3. 删除父子映射表记录
+                parent_child_query = "DELETE FROM parent_child_mapping WHERE doc_id = %s"
+                cursor.execute(parent_child_query, (doc_id,))
+                mapping_deleted = cursor.rowcount
+                print(f"[REPARSE] 删除了 {mapping_deleted} 个父子映射记录")
+
+                # 提交数据库更改
+                conn.commit()
+                cursor.close()
+                conn.close()
+                conn = None
+
+                # 4. 清理Elasticsearch中的数据（参照 delete_document 的实现）
+                es_client = get_es_client()
+                if es_client and doc_data["tenant_id"]:
+                    tenant_id_for_cleanup = doc_data["tenant_id"]
+
+                    # 4.1 清理子分块索引
+                    es_index_name = f"ragflow_{tenant_id_for_cleanup}"
+                    try:
+                        if es_client.indices.exists(index=es_index_name):
+                            query_body = {"query": {"term": {"doc_id": doc_id}}}
+                            resp = es_client.delete_by_query(
+                                index=es_index_name,
+                                body=query_body,
+                                refresh=True,
+                                ignore_unavailable=True,
+                            )
+                            deleted_count = resp.get("deleted", 0)
+                            print(f"[REPARSE] 从子分块索引 {es_index_name} 中删除 {deleted_count} 个分块")
+                        else:
+                            print(f"[REPARSE] 子分块索引 {es_index_name} 不存在，跳过清理")
+                    except Exception as es_err:
+                        print(f"[REPARSE-ERROR] 清理子分块索引失败: {str(es_err)}")
+
+                    # 4.2 清理父分块索引
+                    parent_index_name = f"ragflow_{tenant_id_for_cleanup}_parent"
+                    try:
+                        if es_client.indices.exists(index=parent_index_name):
+                            query_body = {"query": {"term": {"doc_id": doc_id}}}
+                            resp = es_client.delete_by_query(
+                                index=parent_index_name,
+                                body=query_body,
+                                refresh=True,
+                                ignore_unavailable=True,
+                            )
+                            deleted_parent_count = resp.get("deleted", 0)
+                            print(f"[REPARSE] 从父分块索引 {parent_index_name} 中删除 {deleted_parent_count} 个父分块")
+                        else:
+                            print(f"[REPARSE] 父分块索引 {parent_index_name} 不存在，跳过清理")
+                    except Exception as es_err:
+                        print(f"[REPARSE-ERROR] 清理父分块索引失败: {str(es_err)}")
+
+                print(f"[REPARSE] 文档 {doc_data['name']} 的数据清理完成，开始重新解析...")
+
+                # 重新获取数据库连接
+                conn = cls._get_db_connection()
+                cursor = conn.cursor(dictionary=True)
+
             # 立即更新文档状态为"正在解析"，确保UI及时显示
             _update_document_progress(doc_id, run="1", progress=0.0, message="开始解析文档...")
             
             # 获取文档和文件信息
-            conn = cls._get_db_connection()
-            cursor = conn.cursor(dictionary=True)
+            if not conn:
+                conn = cls._get_db_connection()
+                cursor = conn.cursor(dictionary=True)
 
-            # 查询文档信息
+            # 查询文档信息和知识库的解析方法
             doc_query = """
-                SELECT d.id, d.name, d.location, d.type, d.kb_id, d.parser_id, d.parser_config, d.created_by
+                SELECT d.id, d.name, d.location, d.type, d.kb_id, 
+                       COALESCE(d.parser_id, k.parser_id, 'mineru') as parser_id, 
+                       d.parser_config, d.created_by
                 FROM document d
+                JOIN knowledgebase k ON d.kb_id = k.id
                 WHERE d.id = %s
             """
             cursor.execute(doc_query, (doc_id,))
@@ -896,8 +1092,7 @@ class KnowledgebaseService:
             _update_document_progress(doc_id, run="1", progress=0.0, message="开始解析")
 
             # 调用后台解析函数
-            embedding_config = cls.get_system_embedding_config()
-            parse_result = perform_parse(doc_id, doc_info, file_info, embedding_config)
+            parse_result = perform_parse(doc_id, doc_info, file_info)
 
             # 返回解析结果
             return parse_result
@@ -951,7 +1146,7 @@ class KnowledgebaseService:
             cursor = conn.cursor(dictionary=True)
 
             query = """
-                SELECT progress, progress_msg, status, run
+                SELECT progress, progress_msg, status, run, chunk_num
                 FROM document
                 WHERE id = %s
             """
@@ -974,6 +1169,7 @@ class KnowledgebaseService:
                 "message": result.get("progress_msg", ""),
                 "status": result.get("status", "0"),
                 "running": result.get("run", "0"),
+                "chunk_num": result.get("chunk_num", 0),
             }
 
         except Exception as e:

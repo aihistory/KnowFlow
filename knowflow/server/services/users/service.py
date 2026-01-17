@@ -4,7 +4,7 @@ from datetime import datetime
 from utils import generate_uuid, encrypt_password
 from database import DB_CONFIG
 
-def get_users_with_pagination(current_page, page_size, username='', email=''):
+def get_users_with_pagination(current_page, page_size, username='', email='', current_user_id=None, user_role=None):
     """查询用户信息，支持分页和条件筛选"""
     try:
         # 建立数据库连接
@@ -22,6 +22,18 @@ def get_users_with_pagination(current_page, page_size, username='', email=''):
         if email:
             where_clauses.append("email LIKE %s")
             params.append(f"%{email}%")
+        
+        # 添加基于角色的权限过滤
+        if current_user_id and user_role:
+            if user_role == 'admin':
+                # 管理员只能看到自己创建的用户 + 自己
+                where_clauses.append("(created_by = %s OR id = %s)")
+                params.extend([current_user_id, current_user_id])
+            elif user_role == 'user':
+                # 普通用户只能看到自己
+                where_clauses.append("id = %s")
+                params.append(current_user_id)
+            # super_admin 不添加过滤条件，可以看到所有用户
         
         # 组合WHERE子句
         where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
@@ -97,7 +109,7 @@ def delete_user(user_id):
         print(f"删除用户错误: {err}")
         return False
 
-def create_user(user_data):
+def create_user(user_data, created_by=None):
     """
     创建新用户，并加入超级管理员的团队，并使用超级管理员的模型配置。
     时间将以 UTC+8 (Asia/Shanghai) 存储。
@@ -172,19 +184,19 @@ def create_user(user_data):
             id, create_time, create_date, update_time, update_date, access_token,
             nickname, password, email, avatar, language, color_schema, timezone,
             last_login_time, is_authenticated, is_active, is_anonymous, login_channel,
-            status, is_superuser
+            status, is_superuser, created_by
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s,
-            %s, %s
+            %s, %s, %s
         )
         """
         user_data_tuple = (
             user_id, create_time, current_date, create_time, current_date, None, # 使用修改后的时间
             username, encrypted_password, email, None, "Chinese", "Bright", "UTC+8 Asia/Shanghai",
             current_date, 1, 1, 0, "password", # last_login_time 也使用 UTC+8 时间
-            1, 0
+            1, 0, created_by
         )
         cursor.execute(user_insert_query, user_data_tuple)
 
@@ -193,11 +205,11 @@ def create_user(user_data):
         INSERT INTO tenant (
             id, create_time, create_date, update_time, update_date, name,
             public_key, llm_id, embd_id, asr_id, img2txt_id, rerank_id, tts_id,
-            parser_ids, credit, status
+            parser_ids, credit, status, created_by
         ) VALUES (
             %s, %s, %s, %s, %s, %s,
             %s, %s, %s, %s, %s, %s, %s,
-            %s, %s, %s
+            %s, %s, %s, %s
         )
         """
 
@@ -208,14 +220,14 @@ def create_user(user_data):
                 None, str(admin_tenant['llm_id']), str(admin_tenant['embd_id']),
                 str(admin_tenant['asr_id']), str(admin_tenant['img2txt_id']),
                 str(admin_tenant['rerank_id']), str(admin_tenant['tts_id']),
-                str(admin_tenant['parser_ids']), str(admin_tenant['credit']), 1
+                str(admin_tenant['parser_ids']), str(admin_tenant['credit']), 1, created_by
             )
         else:
             # 如果是第一个用户，模型ID使用空字符串
             tenant_data = (
                 user_id, create_time, current_date, create_time, current_date, username + "'s Kingdom", # 使用修改后的时间
                 None, '', '', '', '', '', '',
-                '', "1000", 1
+                '', "1000", 1, created_by
             )
         cursor.execute(tenant_insert_query, tenant_data)
 
@@ -374,7 +386,7 @@ def reset_user_password(user_id, new_password):
             conn.close()
         return False
 
-def get_assignable_users_with_pagination(current_page, page_size, username='', email=''):
+def get_assignable_users_with_pagination(current_page, page_size, username='', email='', current_user_id=None, user_role=None):
     """
     查询可分配权限的用户信息（排除超级管理员），支持分页和条件筛选
     超级管理员自动拥有所有权限，不需要单独分配
@@ -405,6 +417,18 @@ def get_assignable_users_with_pagination(current_page, page_size, username='', e
                 WHERE r.code = 'super_admin' AND ur.is_active = 1
             )
         """)
+        
+        # 添加基于角色的权限过滤
+        if current_user_id and user_role:
+            if user_role == 'admin':
+                # 管理员只能看到自己创建的用户 + 自己
+                where_clauses.append("(created_by = %s OR id = %s)")
+                params.extend([current_user_id, current_user_id])
+            elif user_role == 'user':
+                # 普通用户只能看到自己
+                where_clauses.append("id = %s")
+                params.append(current_user_id)
+            # super_admin 不添加过滤条件，可以看到所有用户
         
         # 组合WHERE子句
         where_sql = " AND ".join(where_clauses)

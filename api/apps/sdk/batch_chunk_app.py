@@ -23,8 +23,6 @@ KnowFlow 批量 Chunk 添加插件 (集成式实现)
 
 import datetime
 import xxhash
-import re
-import sys
 import traceback
 from timeit import default_timer as timer
 import time
@@ -34,13 +32,10 @@ from flask import request, Blueprint
 from api.utils.api_utils import token_required, get_result, get_error_data_result
 from api.db.services.knowledgebase_service import KnowledgebaseService
 from api.db.services.document_service import DocumentService
-from api.db import LLMType, ParserType
+from api.db import LLMType
 from api.db.services.llm_service import TenantLLMService
 from rag.nlp import rag_tokenizer, search
-from rag.app.qa import rmPrefix, beAdoc
 from rag.prompts import keyword_extraction, question_proposal
-from rag.app.tag import label_question
-from rag.utils import rmSpace
 from graphrag.utils import get_llm_cache, set_llm_cache, chat_limiter
 from api import settings
 import trio
@@ -321,6 +316,169 @@ def _process_auto_keywords_questions(all_processed_chunks, document_id, chat_mod
         return False
 
 
+def _handle_parent_child_processing(parent_child_data, child_chunk_ids, tenant_id, dataset_id):
+    """
+    在 RAGFlow 容器中处理父子分块逻辑
+    
+    Args:
+        parent_child_data: 父子分块数据字典
+        child_chunk_ids: 子分块ID列表
+        tenant_id: 租户ID
+        dataset_id: 数据集ID
+    """
+    try:
+        doc_id = parent_child_data['doc_id']
+        kb_id = parent_child_data['kb_id']
+        parent_chunks = parent_child_data['parent_chunks']
+        child_chunks = parent_child_data['child_chunks']
+        relationships = parent_child_data['relationships']
+        
+        if not child_chunk_ids:
+            raise Exception("未提供子分块IDs，无法建立映射关系")
+        
+        if len(child_chunk_ids) != len(child_chunks):
+            raise Exception(f"子分块数量不匹配: 实际IDs={len(child_chunk_ids)}, 子分块数据={len(child_chunks)}")
+        
+        print(f"🔗 [Parent-Child] 开始处理 {len(parent_chunks)} 个父分块和 {len(relationships)} 个映射关系")
+        
+        # 1. 生成父分块IDs并索引到单独的ES索引
+        import uuid
+        parent_ids = [str(uuid.uuid4()) for _ in parent_chunks]
+        
+        print(f"📥 [Parent-Child] 索引父分块到单独的Elasticsearch索引...")
+        _index_parents_to_separate_elasticsearch_in_ragflow(doc_id, kb_id, parent_chunks, parent_ids, tenant_id, dataset_id)
+        print(f"✅ [Parent-Child] {len(parent_chunks)} 个父分块已索引到单独的ES索引")
+        
+        # 2. 建立映射关系
+        print(f"🔗 [Parent-Child] 建立父子映射关系...")
+        _create_parent_child_mappings_in_ragflow(
+            doc_id, kb_id, 
+            parent_chunks, parent_ids,
+            child_chunks, child_chunk_ids, 
+            relationships
+        )
+        print(f"✅ [Parent-Child] {len(relationships)} 个映射关系已建立")
+        
+    except Exception as e:
+        print(f"❌ [Parent-Child] 处理失败: {e}")
+        raise
+
+
+def _index_parents_to_separate_elasticsearch_in_ragflow(doc_id, kb_id, parent_chunks, parent_ids, tenant_id, dataset_id):
+    """在RAGFlow容器中将父分块索引到专门的ES索引，与子分块分离"""
+    try:
+        from datetime import datetime
+        import re
+        
+        # 获取文档信息
+        from api.db.services.document_service import DocumentService
+        doc = DocumentService.query(id=doc_id, kb_id=kb_id)
+        doc_name = doc[0].name if doc else "unknown"
+        
+        # 获取ES客户端
+        from rag.nlp import search
+        from rag.nlp import rag_tokenizer
+        
+        # 构建专门的父分块索引名（与子分块索引分离）
+        parent_index_name = f"{search.index_name(tenant_id)}_parent"
+        
+        print(f"📄 [Parent-ES] 保存 {len(parent_chunks)} 个父分块到专门的ES索引: {parent_index_name}")
+        
+        # 索引父分块到专门的索引
+        for i, parent_chunk in enumerate(parent_chunks):
+            parent_id = parent_ids[i]
+            content = parent_chunk.get('content', '')
+            
+            # 使用 rag_tokenizer 进行分词处理
+            content_ltks = rag_tokenizer.tokenize(content)
+            
+            # 构建父分块文档结构（遵循RAGFlow ES文档结构，但存储在单独索引）
+            doc_body = {
+                "id": parent_id,  # 必须包含id字段
+                "content_ltks": content_ltks,  # 使用rag_tokenizer分词
+                "content_with_weight": content,
+                "content_sm_ltks": rag_tokenizer.fine_grained_tokenize(content_ltks),  # 细粒度分词
+                "docnm_kwd": doc_name,
+                "doc_id": doc_id,
+                "kb_id": dataset_id,
+                "important_kwd": [],
+                "important_tks": rag_tokenizer.tokenize(""),  # 空的重要关键词tokens
+                "question_kwd": [],
+                "question_tks": rag_tokenizer.tokenize(""),  # 空的问题tokens
+                "img_id": "",
+                "positions": parent_chunk.get('positions', []),
+                "page_num_int": [parent_chunk.get('page_number', 1)],  # 使用数组格式
+                "top_int": i,  # 使用索引作为排序字段
+                "chunk_type": "parent",  # 标记为父分块
+                "create_time": str(datetime.now()).replace("T", " ")[:19],
+                "create_timestamp_flt": datetime.now().timestamp()
+            }
+            
+            # 索引到专门的父分块ES索引（与子分块索引分离）
+            settings.docStoreConn.insert([doc_body], parent_index_name, dataset_id)
+        
+        print(f"✅ [Parent-ES] 成功保存 {len(parent_chunks)} 个父分块到专门的ES索引")
+        print(f"  💡 [Parent-ES] 父分块存储在 {parent_index_name}，不会出现在主检索结果中")
+        print(f"  🔍 [Parent-ES] 子分块存储在 {search.index_name(tenant_id)}，用于正常检索")
+        
+    except Exception as e:
+        print(f"❌ [Parent-Child] 父分块ES索引失败: {e}")
+        import traceback
+        traceback.print_exc()
+        raise
+
+
+def _create_parent_child_mappings_in_ragflow(doc_id, kb_id, parent_chunks, parent_ids, child_chunks, child_chunk_ids, relationships):
+    """在RAGFlow容器中创建父子分块映射关系"""
+    try:
+        # 导入父子分块模型
+        from api.db.parent_child_models import ParentChildMapping
+        from datetime import datetime
+        
+        # 创建映射字典
+        orig_parent_to_db = {}
+        orig_child_to_actual = {}
+        
+        for i, chunk in enumerate(parent_chunks):
+            orig_parent_to_db[chunk['id']] = parent_ids[i]
+            
+        for i, chunk in enumerate(child_chunks):
+            orig_child_to_actual[chunk['id']] = child_chunk_ids[i]
+        
+        # 保存映射关系到MySQL
+        current_time = int(datetime.now().timestamp() * 1000)
+        current_datetime = datetime.now()
+        
+        mapping_count = 0
+        for relationship in relationships:
+            child_orig_id = relationship['child_chunk_id']
+            parent_orig_id = relationship['parent_chunk_id']
+            
+            if child_orig_id in orig_child_to_actual and parent_orig_id in orig_parent_to_db:
+                actual_child_id = orig_child_to_actual[child_orig_id]
+                db_parent_id = orig_parent_to_db[parent_orig_id]
+                
+                # 创建映射记录
+                ParentChildMapping.create(
+                    create_time=current_time,
+                    create_date=current_datetime, 
+                    update_time=current_time,
+                    update_date=current_datetime,
+                    child_chunk_id=actual_child_id,
+                    parent_chunk_id=db_parent_id,
+                    doc_id=doc_id,
+                    kb_id=kb_id,
+                    relevance_score=100
+                )
+                mapping_count += 1
+        
+        print(f"📊 [Parent-Child] 成功建立 {mapping_count} 个父子映射关系")
+        
+    except Exception as e:
+        print(f"❌ [Parent-Child] 创建父子映射失败: {e}")
+        raise
+
+
 def _process_graphrag(document_id, tenant_id, dataset_id, graphrag_config):
     """
     处理GraphRAG知识图谱构建
@@ -583,6 +741,41 @@ def batch_add_chunk(tenant_id, dataset_id, document_id):
                     description: Position information as list of [page_num, left, right, top, bottom].
               required: true
               description: Array of chunks to add.
+            parent_child_data:
+              type: object
+              description: Parent-child chunking data (optional).
+              properties:
+                parent_chunks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      content:
+                        type: string
+                child_chunks:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      id:
+                        type: string
+                      content:
+                        type: string
+                relationships:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      child_chunk_id:
+                        type: string
+                      parent_chunk_id:
+                        type: string
+                doc_id:
+                  type: string
+                kb_id:
+                  type: string
             batch_size:
               type: integer
               description: Size of each processing batch (default 10, max 50).
@@ -655,6 +848,7 @@ def batch_add_chunk(tenant_id, dataset_id, document_id):
         req = request.json
         chunks_data = req.get("chunks", [])
         batch_size = min(req.get("batch_size", DEFAULT_BATCH_SIZE), MAX_BATCH_SIZE)
+        parent_child_data = req.get("parent_child_data")  # 获取父子分块数据
         
         # 重试机制配置（可通过请求参数调整）
         MAX_RETRIES = min(req.get("max_retries", 3), 5)  # 限制最大重试次数为5
@@ -827,7 +1021,19 @@ def batch_add_chunk(tenant_id, dataset_id, document_id):
                 batch_num = batch_index // batch_size + 1 
                 processing_errors.append(f"Batch {batch_num} failed after {MAX_RETRIES} retries ({len(batch_chunks)} chunks)")
         
-        # ===== 6. 处理自动关键词和问题生成 =====
+        # ===== 6. 处理父子分块（如果提供了父子分块数据）=====
+        if parent_child_data and all_processed_chunks:
+            print(f"🔗 [Parent-Child] 检测到父子分块模式，开始处理父分块和映射关系")
+            try:
+                all_chunk_ids = [chunk.get("id") for chunk in all_processed_chunks if chunk.get("id")]
+                _handle_parent_child_processing(parent_child_data, all_chunk_ids, tenant_id, dataset_id)
+                print(f"✅ [Parent-Child] 父子分块处理完成")
+            except Exception as e:
+                print(f"❌ [Parent-Child] 父子分块处理失败: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # ===== 7. 处理自动关键词和问题生成 =====
         if all_processed_chunks:
             try:
                 # 检查是否启用自动关键词/问题

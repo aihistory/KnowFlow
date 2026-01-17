@@ -57,7 +57,7 @@ def get_db_connection():
     """创建数据库连接"""
     return mysql.connector.connect(**DB_CONFIG)
 
-def get_files_list(current_page, page_size, parent_id=None, name_filter=""):
+def get_files_list(current_page, page_size, parent_id=None, name_filter="", manageable_user_ids=None, user_role=None):
     """
     获取文件列表
     
@@ -90,6 +90,19 @@ def get_files_list(current_page, page_size, parent_id=None, name_filter=""):
             where_clause += " AND f.name LIKE %s"
             params.append(f"%{name_filter}%")
         
+        # 添加基于角色的权限过滤
+        if manageable_user_ids is not None and user_role:
+            if user_role in ['admin', 'user']:
+                # 管理员和普通用户只能看到可管理用户创建的文件
+                if manageable_user_ids:
+                    placeholders = ','.join(['%s'] * len(manageable_user_ids))
+                    where_clause += f" AND f.created_by IN ({placeholders})"
+                    params.extend(manageable_user_ids)
+                else:
+                    # 如果没有可管理的用户，则不显示任何文件
+                    where_clause += " AND 1=0"
+            # super_admin 不添加过滤条件，可以看到所有文件
+        
         # 查询总数
         count_query = f"""
             SELECT COUNT(*) as total
@@ -99,10 +112,12 @@ def get_files_list(current_page, page_size, parent_id=None, name_filter=""):
         cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
         
-        # 查询文件列表
+        # 查询文件列表（包含创建人信息）
         query = f"""
-            SELECT f.id, f.name, f.parent_id, f.type, f.size, f.location, f.source_type, f.create_time
+            SELECT f.id, f.name, f.parent_id, f.type, f.size, f.location, f.source_type, f.create_time, f.created_by,
+                   u.nickname as created_by_name
             FROM file f
+            LEFT JOIN user u ON f.created_by = u.id
             {where_clause}
             ORDER BY f.create_time DESC
             LIMIT %s OFFSET %s
@@ -420,6 +435,8 @@ def batch_delete_files(file_ids):
 
 def upload_files_to_server(files, parent_id=None, user_id=None):
     """处理文件上传到服务器的核心逻辑"""
+    print(f"[文件上传] 传入的user_id: {user_id}")
+    
     if user_id is None:
         try:
             conn = get_db_connection()
@@ -547,6 +564,8 @@ def upload_files_to_server(files, parent_id=None, user_id=None):
                     "update_time": current_time,
                     "update_date": current_date
                 }
+                
+                print(f"[文件上传] 创建文件记录: {filename}, created_by: {user_id}")
                 
                 # 保存文件记录
                 conn = get_db_connection()

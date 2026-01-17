@@ -1,4 +1,5 @@
 import { useTranslate } from '@/hooks/common-hooks';
+import { useFetchUserInfo } from '@/hooks/user-setting-hooks';
 import request from '@/utils/request';
 import {
   DeleteOutlined,
@@ -62,6 +63,10 @@ interface Role {
 
 const TeamManagementPage = () => {
   const { t } = useTranslate('setting');
+
+  // 登录用户信息
+  const { data: userInfo } = useFetchUserInfo();
+  const userId = userInfo?.id;
   const [loading, setLoading] = useState(false);
   const [memberLoading, setMemberLoading] = useState(false);
   const [userLoading, setUserLoading] = useState(false);
@@ -122,7 +127,7 @@ const TeamManagementPage = () => {
     setLoading(true);
     try {
       const values = searchForm.getFieldsValue();
-      const res = await request.get('/api/v1/teams', {
+      const res = await request.get('/api/knowflow/v1/teams', {
         params: {
           currentPage: pagination.current,
           size: pagination.pageSize,
@@ -140,13 +145,15 @@ const TeamManagementPage = () => {
       await Promise.all(
         (list as TeamData[]).map(async (team) => {
           try {
-            const r = await request.get(`/api/v1/teams/${team.id}/roles`);
+            const r = await request.get(
+              `/api/knowflow/v1/teams/${team.id}/roles`,
+            );
             const teamRolesList = r?.data?.data ?? [];
 
             // 团队角色API返回的是TeamRole对象，需要转换为Role格式
             if (teamRolesList.length > 0) {
               // 获取所有角色信息用于匹配
-              const rolesRes = await request.get('/api/v1/rbac/roles');
+              const rolesRes = await request.get('/api/knowflow/v1/rbac/roles');
               const allRoles = rolesRes?.data?.data || [];
 
               // 根据role_code匹配角色信息
@@ -174,7 +181,7 @@ const TeamManagementPage = () => {
   const loadUserList = async () => {
     setUserLoading(true);
     try {
-      const res = await request.get('/api/v1/users', {
+      const res = await request.get('/api/knowflow/v1/users', {
         params: {
           currentPage: 1,
           size: 1000, // Get all users for selection
@@ -197,7 +204,7 @@ const TeamManagementPage = () => {
   const loadTeamMembers = async (teamId: string) => {
     setMemberLoading(true);
     try {
-      const res = await request.get(`/api/v1/teams/${teamId}/members`);
+      const res = await request.get(`/api/knowflow/v1/teams/${teamId}/members`);
       const data = res?.data?.data || [];
       setTeamMembers(data);
 
@@ -227,10 +234,11 @@ const TeamManagementPage = () => {
   };
 
   const handleCreateTeam = () => {
-    // 默认将当前登录用户设为团队负责人（若存在）
-    const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}');
     teamForm.resetFields();
-    teamForm.setFieldsValue({ owner_id: userInfo?.id });
+    // 默认设置当前用户为负责人
+    if (userId) {
+      teamForm.setFieldsValue({ owner_id: userId });
+    }
     setTeamModalVisible(true);
   };
 
@@ -238,7 +246,7 @@ const TeamManagementPage = () => {
     try {
       const values = await teamForm.validateFields();
       setLoading(true);
-      await request.post('/api/v1/teams', {
+      await request.post('/api/knowflow/v1/teams', {
         data: {
           name: values.name,
           owner_id: values.owner_id,
@@ -265,11 +273,13 @@ const TeamManagementPage = () => {
     setCurrentTeam(team);
     try {
       // 获取所有可用角色作为选项
-      const rolesRes = await request.get('/api/v1/rbac/roles');
+      const rolesRes = await request.get('/api/knowflow/v1/rbac/roles');
       setTeamRoles(rolesRes?.data?.data || []);
 
       // 获取团队当前已分配角色，用于预选中
-      const assignedRes = await request.get(`/api/v1/teams/${team.id}/roles`);
+      const assignedRes = await request.get(
+        `/api/knowflow/v1/teams/${team.id}/roles`,
+      );
       const teamRolesList = assignedRes?.data?.data ?? [];
 
       let selectedRoleId = '';
@@ -310,7 +320,7 @@ const TeamManagementPage = () => {
       const userInfo = JSON.parse(localStorage.getItem('userInfo') || '{}');
       const grantedBy = userInfo.id || 'system';
 
-      await request.post(`/api/v1/teams/${currentTeam?.id}/roles`, {
+      await request.post(`/api/knowflow/v1/teams/${currentTeam?.id}/roles`, {
         data: {
           role_code: selected.code,
           resource_type: 'system', // 默认为系统级别角色
@@ -401,7 +411,7 @@ const TeamManagementPage = () => {
     setMemberLoading(true);
     try {
       await request.delete(
-        `/api/v1/teams/${currentTeam.id}/members/${member.userId}`,
+        `/api/knowflow/v1/teams/${currentTeam.id}/members/${member.userId}`,
       );
       message.success('移除成员成功');
       await loadTeamMembers(currentTeam.id);
@@ -416,7 +426,7 @@ const TeamManagementPage = () => {
   const handleDeleteTeam = async (teamId: string) => {
     setLoading(true);
     try {
-      await request.delete(`/api/v1/teams/${teamId}`);
+      await request.delete(`/api/knowflow/v1/teams/${teamId}`);
       message.success('删除团队成功');
       await loadTeamData();
     } catch (error) {
@@ -434,7 +444,9 @@ const TeamManagementPage = () => {
     setLoading(true);
     try {
       await Promise.all(
-        selectedRowKeys.map((id) => request.delete(`/api/v1/teams/${id}`)),
+        selectedRowKeys.map((id) =>
+          request.delete(`/api/knowflow/v1/teams/${id}`),
+        ),
       );
       setSelectedRowKeys([]);
       message.success(`成功删除 ${selectedRowKeys.length} 个团队`);
@@ -506,15 +518,8 @@ const TeamManagementPage = () => {
       key: 'action',
       fixed: 'right' as const,
       width: 280,
-      align: 'right' as const,
-      onHeaderCell: () => ({
-        style: { paddingRight: '30px' },
-      }),
       render: (_: any, record: TeamData) => (
-        <Space
-          size="small"
-          style={{ justifyContent: 'flex-end', display: 'flex' }}
-        >
+        <Space size="small">
           <Button
             type="link"
             size="small"
@@ -799,11 +804,13 @@ const TeamManagementPage = () => {
             rules={[{ required: true, message: '请选择角色' }]}
           >
             <Select placeholder="请选择角色" style={{ width: '100%' }}>
-              {teamRoles.map((role: any) => (
-                <Select.Option key={role.id} value={role.id}>
-                  {role.name} - {role.description}
-                </Select.Option>
-              ))}
+              {teamRoles
+                .filter((role: any) => role.code !== 'super_admin')
+                .map((role: any) => (
+                  <Select.Option key={role.id} value={role.id}>
+                    {role.name} - {role.description}
+                  </Select.Option>
+                ))}
             </Select>
           </Form.Item>
         </Form>
@@ -832,17 +839,30 @@ const TeamManagementPage = () => {
             label="负责人"
             rules={[{ required: true, message: '请选择负责人' }]}
           >
-            <Select
-              placeholder="请选择负责人"
-              showSearch
-              optionFilterProp="children"
-            >
-              {userList.map((u) => (
-                <Option key={u.id} value={u.id}>
-                  {u.username} ({u.email || '无邮箱'})
+            {userInfo?.is_superuser ? (
+              <Select
+                placeholder="请选择负责人"
+                showSearch
+                optionFilterProp="children"
+                loading={userList.length === 0}
+              >
+                {userList.map((u) => (
+                  <Option key={u.id} value={u.id}>
+                    {u.username} ({u.email || '无邮箱'})
+                  </Option>
+                ))}
+              </Select>
+            ) : (
+              <Select
+                value={userId}
+                disabled
+                style={{ backgroundColor: '#f5f5f5' }}
+              >
+                <Option value={userId}>
+                  {userInfo?.nickname || '当前管理员'}
                 </Option>
-              ))}
-            </Select>
+              </Select>
+            )}
           </Form.Item>
           <Form.Item name="description" label="团队描述">
             <Input.TextArea placeholder="请输入团队描述（可选）" rows={3} />

@@ -61,12 +61,13 @@ def split_markdown_to_chunks_configured(txt, chunk_token_num=256, min_chunk_toke
     根据配置选择合适的分块方法的统一接口
     
     支持的分块方法：
+    - 'parent_child': 父子分块模式，基于Smart分块的双层结构
     - 'strict_regex': 严格按正则表达式分块（当配置启用时）
     - 'advanced': split_markdown_to_chunks_advanced (高级分块，混合策略)
     - 'smart': split_markdown_to_chunks_smart (智能分块，基于AST，默认)
     - 'basic': split_markdown_to_chunks (基础分块)
     
-    可通过环境变量 CHUNK_METHOD 配置，支持的值：advanced, smart, basic
+    可通过环境变量 CHUNK_METHOD 配置，支持的值：parent_child, advanced, smart, basic
     也可通过kwargs传入自定义配置：
     - chunking_config: 分块配置字典，包含strategy等字段
     """
@@ -102,7 +103,17 @@ def split_markdown_to_chunks_configured(txt, chunk_token_num=256, min_chunk_toke
         print(f"  🔢 最小分块: {min_chunk_tokens}")
         
         # 其他策略的处理
-        if strategy == 'advanced':
+        if strategy == 'parent_child':
+            print(f"  🎯 使用父子分块策略")
+            return split_markdown_to_chunks_parent_child(
+                txt,
+                chunk_token_num=chunk_token_num,
+                min_chunk_tokens=min_chunk_tokens,
+                parent_config=custom_chunking_config.get('parent_config', {}),
+                doc_id=kwargs.get('doc_id', 'unknown'),
+                kb_id=kwargs.get('kb_id', 'unknown')
+            )
+        elif strategy == 'advanced':
             include_metadata = kwargs.pop('include_metadata', False)
             overlap_ratio = kwargs.pop('overlap_ratio', 0.0)
             print(f"  🎯 使用高级分块策略")
@@ -411,7 +422,21 @@ def get_blocks_from_md(md_file_path):
                         
                         # 提取文本内容
                         text_content = ''
-                        if 'lines' in block:
+                        
+                        # 对于表格类型，需要从嵌套的blocks中提取HTML
+                        if block.get('type') == 'table' and 'blocks' in block:
+                            for sub_block in block['blocks']:
+                                if 'lines' in sub_block:
+                                    for line in sub_block['lines']:
+                                        if 'spans' in line:
+                                            for span in line['spans']:
+                                                if span.get('type') == 'table' and 'html' in span:
+                                                    text_content += span['html']
+                                                elif 'content' in span:
+                                                    text_content += span['content']
+                        
+                        # 对于非表格类型，使用原来的逻辑
+                        if not text_content and 'lines' in block:
                             for line in block['lines']:
                                 if 'spans' in line:
                                     for span in line['spans']:
@@ -441,7 +466,21 @@ def get_blocks_from_md(md_file_path):
                             
                             # 提取文本内容
                             text_content = ''
-                            if 'lines' in block:
+                            
+                            # 对于表格类型的block，需要从嵌套的blocks中提取HTML
+                            if block.get('type') == 'table' and 'blocks' in block:
+                                for sub_block in block['blocks']:
+                                    if 'lines' in sub_block:
+                                        for line in sub_block['lines']:
+                                            if 'spans' in line:
+                                                for span in line['spans']:
+                                                    if span.get('type') == 'table' and 'html' in span:
+                                                        text_content += span['html']
+                                                    elif 'content' in span:
+                                                        text_content += span['content']
+                            
+                            # 对于非表格类型，使用原来的逻辑
+                            if not text_content and 'lines' in block:
                                 for line in block['lines']:
                                     if 'spans' in line:
                                         for span in line['spans']:
@@ -516,6 +555,9 @@ def get_bbox_for_chunk(md_file_path, chunk_content, block_list=None, matched_glo
         if not chunk_content_clean:
             return None
 
+        # 检查chunk是否为HTML表格
+        is_chunk_table = '<table>' in chunk_content_clean and '</table>' in chunk_content_clean
+        
         # 用 difflib.SequenceMatcher 找最相似的 block
         best_idx = -1
         best_ratio = 0.0
@@ -525,7 +567,23 @@ def get_bbox_for_chunk(md_file_path, chunk_content, block_list=None, matched_glo
             block_text = block.get('text', '').strip()
             if not block_text:
                 continue
-            ratio = difflib.SequenceMatcher(None, chunk_content_clean, block_text).ratio()
+                
+            if is_chunk_table:
+                # 对于表格chunk，提取block中的HTML部分进行比较
+                if '<table>' in block_text and '</table>' in block_text:
+                    import re
+                    table_match = re.search(r'<table>.*?</table>', block_text, re.DOTALL)
+                    if table_match:
+                        block_html = table_match.group(0)
+                        ratio = difflib.SequenceMatcher(None, chunk_content_clean, block_html).ratio()
+                    else:
+                        ratio = 0.0
+                else:
+                    ratio = 0.0
+            else:
+                # 对于非表格chunk，直接比较
+                ratio = difflib.SequenceMatcher(None, chunk_content_clean, block_text).ratio()
+                
             if ratio > best_ratio:
                 best_ratio = ratio
                 best_idx = i
@@ -1227,7 +1285,11 @@ def _extract_nodes_with_header_info(tree, headers_to_split_on):
 
 def _render_node_content(node):
     """渲染单个节点的内容"""
-    if node.type == "table":
+    if node.type == "heading":
+        # 修复：保留标题的markdown格式，与smart分块保持一致
+        title_text = _extract_text_from_node(node)
+        return node.markup + " " + title_text
+    elif node.type == "table":
         return _render_table_from_ast(node)
     elif node.type == "code_block":
         return f"```{node.info or ''}\n{node.content}```"
@@ -1435,3 +1497,455 @@ def split_markdown_to_chunks_strict_regex(txt, chunk_token_num=256, min_chunk_to
     except Exception as e:
         print(f"❌ [ERROR] 自定义正则分块发生异常: {e}，回退到智能分块")
         return split_markdown_to_chunks_smart(txt, chunk_token_num, min_chunk_tokens)
+
+
+def split_markdown_to_chunks_parent_child(txt, chunk_token_num=256, min_chunk_tokens=10, 
+                                         parent_config=None, doc_id='unknown', kb_id='unknown'):
+    """
+    优化后的父子分块方法 - 本地完成所有处理，避免HTTP调用
+    
+    Args:
+        txt: 要分块的文本
+        chunk_token_num: 子分块大小（tokens）
+        min_chunk_tokens: 最小子分块大小
+        parent_config: 父分块配置
+        doc_id: 文档ID
+        kb_id: 知识库ID
+        
+    Returns:
+        list: 子分块列表（用于向量存储和前端显示）
+        
+    Note:
+        现在直接在KnowFlow本地完成所有父子分块处理，避免跨容器HTTP调用
+    """
+    if not txt or not txt.strip():
+        return []
+    
+    parent_config = parent_config or {}
+    
+    try:
+        print(f"🚀 [DEBUG] 本地处理父子分块（优化后无HTTP调用）")
+        print(f"  📝 文本长度: {len(txt)} 字符")
+        print(f"  📋 doc_id: {doc_id}, kb_id: {kb_id}")
+        print(f"  🔢 子分块大小: {chunk_token_num}")
+        print(f"  📊 父分块配置: {parent_config}")
+        
+        # 直接调用本地AST父子分块函数
+        parent_chunks, child_chunks, relationships = split_markdown_to_chunks_ast_parent_child(
+            txt=txt,
+            chunk_token_num=chunk_token_num,
+            min_chunk_tokens=min_chunk_tokens,
+            parent_config=parent_config,
+            doc_id=doc_id,
+            kb_id=kb_id
+        )
+        
+        print(f"📊 [DEBUG] 本地父子分块完成:")
+        print(f"  👨 父分块: {len(parent_chunks)} 个")
+        print(f"  👶 子分块: {len(child_chunks)} 个")
+        print(f"  🔗 关联关系: {len(relationships)} 个")
+        
+        # 构建详细结果供后续使用
+        detailed_result = {
+            'parent_chunks': [
+                {
+                    'id': chunk.id,
+                    'content': chunk.content,
+                    'order': chunk.order,
+                    'metadata': chunk.metadata
+                }
+                for chunk in parent_chunks
+            ],
+            'child_chunks': [
+                {
+                    'id': chunk.id,
+                    'content': chunk.content,
+                    'order': chunk.order,
+                    'metadata': chunk.metadata
+                }
+                for chunk in child_chunks
+            ],
+            'relationships': relationships,
+            'total_parents': len(parent_chunks),
+            'total_children': len(child_chunks)
+        }
+        
+        # 保存详细结果到全局变量（供ragflow_build.py使用）
+        global _last_parent_child_result
+        _last_parent_child_result = detailed_result
+        
+        # 返回子分块内容列表（用于向量存储和前端显示）
+        child_chunks_content = [chunk.content for chunk in child_chunks]
+        
+        print(f"✅ [DEBUG] 本地父子分块优化完成，返回 {len(child_chunks_content)} 个子分块内容")
+        
+        return child_chunks_content
+        
+    except Exception as e:
+        print(f"❌ [ERROR] 本地父子分块失败: {e}，回退到智能分块")
+        import traceback
+        traceback.print_exc()
+        return split_markdown_to_chunks_smart(txt, chunk_token_num, min_chunk_tokens)
+
+
+# _save_parent_child_chunks_to_db 函数已移至 RAGFlow API 层处理
+
+
+# 全局变量存储最后一次父子分块结果
+_last_parent_child_result = None
+
+
+def get_last_parent_child_result():
+    """获取最后一次父子分块的完整结果"""
+    global _last_parent_child_result
+    return _last_parent_child_result
+
+
+# ===== 基于AST的父子分块实现 =====
+
+class ASTChunkInfo:
+    """基于AST的分块信息类"""
+    def __init__(self, id, content, start_line, end_line, order, doc_id='', metadata=None, ast_nodes=None):
+        self.id = id
+        self.content = content
+        self.start_line = start_line
+        self.end_line = end_line
+        self.order = order
+        self.doc_id = doc_id
+        self.metadata = metadata or {}
+        self.ast_nodes = ast_nodes or []
+        
+        # AST特有信息
+        self.section_title = metadata.get('section_title', '')
+        self.context_stack = metadata.get('context_stack', [])
+        self.semantic_elements = metadata.get('semantic_elements', {})
+
+
+def split_markdown_to_chunks_ast_parent_child(txt, chunk_token_num=256, min_chunk_tokens=10, 
+                                             parent_config=None, doc_id='unknown', kb_id='unknown'):
+    """
+    基于AST的父子分块方法
+    
+    Args:
+        txt: 要分块的文本
+        chunk_token_num: 子分块大小（tokens）
+        min_chunk_tokens: 最小子分块大小
+        parent_config: 父分块配置
+        doc_id: 文档ID
+        kb_id: 知识库ID
+        
+    Returns:
+        tuple: (parent_chunks, child_chunks, relationships)
+    """
+    if not MARKDOWN_IT_AVAILABLE:
+        print("Warning: markdown-it-py not available, falling back to simple parent-child")
+        # 回退到现有的父子分块实现
+        from api.apps.chunk_app import parent_child_split
+        return parent_child_split()
+    
+    if not txt or not txt.strip():
+        return [], [], []
+    
+    parent_config = parent_config or {}
+    parent_split_level = parent_config.get('parent_split_level', 2)  # 默认H2分割
+    
+    try:
+        # 1. 解析AST并创建增强节点
+        enhanced_nodes = _create_enhanced_ast_nodes(txt)
+        
+        # 2. 基于AST创建子分块
+        child_chunks = _create_ast_child_chunks(
+            enhanced_nodes, chunk_token_num, min_chunk_tokens, doc_id
+        )
+        
+        # 3. 基于AST和标题层级创建父分块  
+        parent_chunks = _create_ast_parent_chunks(
+            enhanced_nodes, parent_split_level, doc_id
+        )
+        
+        # 4. 建立精确的AST关联关系
+        relationships = _create_ast_relationships(
+            child_chunks, parent_chunks, enhanced_nodes, doc_id, kb_id
+        )
+        
+        print(f"🎯 [AST] 创建父子分块完成:")
+        print(f"  👨 父分块: {len(parent_chunks)} 个")
+        print(f"  👶 子分块: {len(child_chunks)} 个") 
+        print(f"  🔗 关联关系: {len(relationships)} 个")
+        
+        return parent_chunks, child_chunks, relationships
+        
+    except Exception as e:
+        print(f"❌ [ERROR] AST父子分块失败: {e}")
+        import traceback
+        traceback.print_exc()
+        return [], [], []
+
+
+def _create_enhanced_ast_nodes(txt):
+    """创建增强的AST节点信息"""
+    from markdown_it import MarkdownIt
+    from markdown_it.tree import SyntaxTreeNode
+    
+    md = MarkdownIt("commonmark", {"breaks": True, "html": True})
+    md.enable(['table'])
+    
+    tokens = md.parse(txt)
+    tree = SyntaxTreeNode(tokens)
+    
+    enhanced_nodes = []
+    context_stack = []  # 标题上下文栈
+    line_offset = 0
+    
+    for node in tree.children:
+        node_info = _create_enhanced_node_info(node, context_stack, line_offset)
+        if node_info['content'].strip():  # 只保留有内容的节点
+            enhanced_nodes.append(node_info)
+        line_offset = node_info['line_end']
+    
+    return enhanced_nodes
+
+
+def _create_enhanced_node_info(node, context_stack, line_offset):
+    """为AST节点创建增强信息"""
+    content = _render_node_content(node)  # 复用现有函数
+    
+    # 估算行号（markdown-it-py的map信息可能不准确）
+    content_lines = content.count('\n') + 1 if content.strip() else 0
+    line_start = line_offset
+    line_end = line_offset + content_lines
+    
+    node_info = {
+        'node': node,
+        'type': node.type,
+        'content': content,
+        'line_start': line_start,
+        'line_end': line_end,
+        'context_stack': [c.copy() for c in context_stack],  # 深拷贝上下文
+        'is_section_boundary': False,
+        'header_level': None,
+        'header_title': None
+    }
+    
+    # 处理标题节点
+    if node.type == "heading":
+        level = int(node.tag[1]) if hasattr(node, 'tag') and node.tag else 1
+        title = _extract_text_from_node(node)
+        
+        # 更新上下文栈
+        _update_context_stack(context_stack, level, title)
+        
+        node_info.update({
+            'header_level': level,
+            'header_title': title,
+            'is_section_boundary': True,
+            'context_stack': [c.copy() for c in context_stack]  # 更新后的上下文
+        })
+    
+    return node_info
+
+
+def _create_ast_child_chunks(enhanced_nodes, chunk_token_num, min_chunk_tokens, doc_id):
+    """基于AST节点创建子分块"""
+    child_chunks = []
+    current_chunk_nodes = []
+    current_tokens = 0
+    chunk_order = 0
+    
+    for node_info in enhanced_nodes:
+        content = node_info['content']
+        if not content.strip():
+            continue
+            
+        content_tokens = num_tokens_from_string(content)
+        
+        # 检查是否需要分块
+        should_break = (
+            node_info['type'] == 'heading' and 
+            node_info.get('header_level', 99) <= 3  # H1, H2, H3作为分块边界
+        )
+        
+        if should_break and current_chunk_nodes and current_tokens >= min_chunk_tokens:
+            # 创建子分块
+            child_chunk = _create_ast_child_chunk_obj(
+                current_chunk_nodes, chunk_order, doc_id
+            )
+            child_chunks.append(child_chunk)
+            chunk_order += 1
+            current_chunk_nodes = []
+            current_tokens = 0
+        
+        # 检查token限制
+        if (current_tokens + content_tokens > chunk_token_num and 
+            current_chunk_nodes and current_tokens >= min_chunk_tokens):
+            
+            child_chunk = _create_ast_child_chunk_obj(
+                current_chunk_nodes, chunk_order, doc_id
+            )
+            child_chunks.append(child_chunk)
+            chunk_order += 1
+            current_chunk_nodes = []
+            current_tokens = 0
+        
+        current_chunk_nodes.append(node_info)
+        current_tokens += content_tokens
+    
+    # 处理最后一个分块
+    if current_chunk_nodes and current_tokens >= min_chunk_tokens:
+        child_chunk = _create_ast_child_chunk_obj(
+            current_chunk_nodes, chunk_order, doc_id
+        )
+        child_chunks.append(child_chunk)
+    
+    return child_chunks
+
+
+def _create_ast_child_chunk_obj(nodes, order, doc_id):
+    """创建子分块对象"""
+    import hashlib
+    
+    content = "\n\n".join([n['content'] for n in nodes if n['content'].strip()])
+    chunk_id = f"{doc_id}_child_ast_{order:04d}_{hashlib.md5(content.encode('utf-8')).hexdigest()[:8]}"
+    
+    return ASTChunkInfo(
+        id=chunk_id,
+        content=content,
+        start_line=nodes[0]['line_start'],
+        end_line=nodes[-1]['line_end'],
+        order=order,
+        doc_id=doc_id,
+        ast_nodes=nodes,
+        metadata={
+            'chunk_type': 'child',
+            'creation_method': 'ast_semantic',
+            'contains_headers': any(n['type'] == 'heading' for n in nodes),
+            'contains_tables': any(n['type'] == 'table' for n in nodes),
+            'contains_code': any(n['type'] == 'code_block' for n in nodes),
+            'ast_node_count': len(nodes),
+            'context_stack': nodes[0]['context_stack'] if nodes else []
+        }
+    )
+
+
+def _create_ast_parent_chunks(enhanced_nodes, parent_split_level, doc_id):
+    """基于AST和标题层级创建父分块"""
+    parent_chunks = []
+    current_section_nodes = []
+    current_section_header = None
+    parent_order = 0
+    
+    for node_info in enhanced_nodes:
+        # 检查是否是父分块边界标题
+        if (node_info['type'] == 'heading' and 
+            node_info.get('header_level', 99) <= parent_split_level):
+            
+            # 完成当前父分块
+            if current_section_nodes:
+                parent_chunk = _create_ast_parent_chunk_obj(
+                    current_section_nodes, current_section_header, parent_order, doc_id
+                )
+                parent_chunks.append(parent_chunk)
+                parent_order += 1
+            
+            # 开始新的父分块
+            current_section_nodes = [node_info]
+            current_section_header = {
+                'level': node_info['header_level'],
+                'title': node_info['header_title'],
+                'context_stack': node_info['context_stack']
+            }
+        else:
+            current_section_nodes.append(node_info)
+    
+    # 处理最后一个父分块
+    if current_section_nodes:
+        parent_chunk = _create_ast_parent_chunk_obj(
+            current_section_nodes, current_section_header, parent_order, doc_id
+        )
+        parent_chunks.append(parent_chunk)
+    
+    return parent_chunks
+
+
+def _create_ast_parent_chunk_obj(nodes, header_info, order, doc_id):
+    """创建父分块对象"""
+    import hashlib
+    
+    content = "\n\n".join([n['content'] for n in nodes if n['content'].strip()])
+    chunk_id = f"{doc_id}_parent_ast_{order:04d}_{hashlib.md5(content.encode('utf-8')).hexdigest()[:8]}"
+    
+    return ASTChunkInfo(
+        id=chunk_id,
+        content=content,
+        start_line=nodes[0]['line_start'],
+        end_line=nodes[-1]['line_end'],
+        order=order,
+        doc_id=doc_id,
+        ast_nodes=nodes,
+        metadata={
+            'chunk_type': 'parent',
+            'creation_method': 'ast_semantic',
+            'section_title': header_info['title'] if header_info else '',
+            'header_level': header_info['level'] if header_info else 0,
+            'context_stack': header_info['context_stack'] if header_info else [],
+            'semantic_completeness': True,
+            'ast_node_count': len(nodes)
+        }
+    )
+
+
+def _create_ast_relationships(child_chunks, parent_chunks, enhanced_nodes, doc_id, kb_id):
+    """基于AST结构创建精确的父子关联"""
+    relationships = []
+    
+    for child_chunk in child_chunks:
+        # 通过行号范围找到对应的父分块
+        matching_parent = _find_parent_by_line_range(
+            child_chunk.start_line, child_chunk.end_line, parent_chunks
+        )
+        
+        if matching_parent:
+            # 从AST中提取语义信息
+            semantic_info = _extract_ast_semantic_info(child_chunk, matching_parent)
+            
+            relationships.append({
+                'child_chunk_id': child_chunk.id,
+                'parent_chunk_id': matching_parent.id,
+                'doc_id': doc_id,
+                'kb_id': kb_id,
+                'relevance_score': 100,
+                'relationship_type': 'ast_containment',
+                'section_title': matching_parent.section_title,
+                'child_start_line': child_chunk.start_line,
+                'child_end_line': child_chunk.end_line,
+                'parent_start_line': matching_parent.start_line,
+                'parent_end_line': matching_parent.end_line,
+                'semantic_info': semantic_info
+            })
+    
+    return relationships
+
+
+def _find_parent_by_line_range(child_start, child_end, parent_chunks):
+    """通过行号范围找到对应的父分块"""
+    for parent in parent_chunks:
+        if (parent.start_line <= child_start and parent.end_line >= child_end):
+            return parent
+    return None
+
+
+def _extract_ast_semantic_info(child_chunk, parent_chunk):
+    """从AST中提取语义信息"""
+    child_nodes = child_chunk.ast_nodes
+    
+    semantic_info = {
+        'contains_headers': len([n for n in child_nodes if n['type'] == 'heading']),
+        'contains_tables': len([n for n in child_nodes if n['type'] == 'table']),
+        'contains_code': len([n for n in child_nodes if n['type'] == 'code_block']),
+        'contains_lists': len([n for n in child_nodes if n['type'] in ['bullet_list', 'ordered_list']]),
+        'context_hierarchy': parent_chunk.context_stack,
+        'ast_node_types': list(set([n['type'] for n in child_nodes])),
+        'parent_section_title': parent_chunk.section_title
+    }
+    
+    return semantic_info

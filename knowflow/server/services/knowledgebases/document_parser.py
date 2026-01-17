@@ -6,6 +6,39 @@ import mysql.connector
 import traceback
 import time 
 from database import DB_CONFIG, get_minio_client
+from ..config.config_loader import CONFIG
+
+
+def _get_parser_engine(parser_id: str, parser_config: dict) -> str:
+    """根据文档的parser_id和配置选择解析引擎
+    
+    Args:
+        parser_id: 文档的解析方法ID (优先级最高)
+        parser_config: 解析器配置字典
+        
+    Returns:
+        str: 解析引擎名称 ('mineru' 或 'dots')
+    """
+    # 1. 优先使用文档级别设置的解析方法 (最高优先级)
+    if parser_id:
+        engine = parser_id.lower()
+        if engine in ['mineru', 'dots']:
+            print(f"[Parser-INFO] 使用文档指定的解析引擎: {engine}")
+            return engine
+    
+    # 2. 检查解析配置中是否指定了引擎
+    if parser_config and 'parser_engine' in parser_config:
+        engine = parser_config['parser_engine'].lower()
+        if engine in ['mineru', 'dots']:
+            print(f"[Parser-INFO] 使用配置指定的解析引擎: {engine}")
+            return engine
+    
+    # 3. 使用全局默认配置
+    default_engine = getattr(CONFIG, 'default_parser', 'mineru').lower()
+    print(f"[Parser-INFO] 使用默认解析引擎: {default_engine}")
+    
+    # 确保返回有效的引擎名称
+    return default_engine if default_engine in ['mineru', 'dots'] else 'mineru'
 
 
 def _get_db_connection():
@@ -59,7 +92,7 @@ def _update_document_progress(doc_id, progress=None, message=None, status=None, 
 
 
 
-def perform_parse(doc_id, doc_info, file_info, embedding_config):
+def perform_parse(doc_id, doc_info, file_info):
     """
     执行文档解析的核心逻辑
 
@@ -74,37 +107,6 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config):
     temp_pdf_path = None
     temp_image_dir = None
     start_time = time.time()
-
-    
-      # 默认值处理
-    embedding_model_name = embedding_config.get("llm_name") if embedding_config and embedding_config.get("llm_name") else "bge-m3" # 默认模型
-    # 对模型名称进行处理
-    if embedding_model_name and '___' in embedding_model_name:
-        embedding_model_name = embedding_model_name.split('___')[0]
-    embedding_api_base = embedding_config.get("api_base") if embedding_config and embedding_config.get("api_base") else "http://localhost:8000" # 默认基础 URL
-    embedding_api_key = embedding_config.get("api_key") if embedding_config else None # 可能为 None 或空字符串
-    
-    # 构建完整的 Embedding API URL
-    embedding_url = None # 默认为 None
-    if embedding_api_base:
-        # 确保 embedding_api_base 包含协议头 (http:// 或 https://)
-        if not embedding_api_base.startswith(('http://', 'https://')):
-            embedding_api_base = 'http://' + embedding_api_base
-
-        # --- URL 拼接优化 (处理 /v1) ---
-        endpoint_segment = "embeddings"
-        full_endpoint_path = "v1/embeddings"
-        # 移除末尾斜杠以方便判断
-        normalized_base_url = embedding_api_base.rstrip('/')
-
-        if normalized_base_url.endswith('/v1'):
-            # 如果 base_url 已经是 http://host/v1 形式
-            embedding_url = normalized_base_url + '/' + endpoint_segment
-        else:
-            # 如果 base_url 是 http://host 或 http://host/api 等其他形式
-            embedding_url = normalized_base_url + '/' + full_endpoint_path
-
-    print(f"[Parser-INFO] 使用 Embedding 配置: URL='{embedding_url}', Model='{embedding_model_name}', Key={embedding_api_key}")
     
     try:
         kb_id = doc_info['kb_id']
@@ -169,48 +171,78 @@ def perform_parse(doc_id, doc_info, file_info, embedding_config):
             # 初始化进度
             update_progress(0.2, "OCR开始")
 
-            # 检查是否启用开发模式
-            from .mineru_parse.utils import is_dev_mode
+            # === 选择解析引擎 ===
+            parser_id = doc_info.get('parser_id', 'mineru')
+            selected_engine = _get_parser_engine(parser_id, parser_config)
+            print(f"[Parser-INFO] 选择的解析引擎: {selected_engine}")
+
+            if selected_engine == 'dots':
+                # === DOTS OCR 解析路径 ===
+                print(f"[Parser-INFO] 使用 DOTS OCR 处理文档")
+                from .dots_parse.process_document import process_document_with_dots
+                
+                chunk_count = process_document_with_dots(
+                    doc_id=doc_id,
+                    file_path=temp_file_path,
+                    kb_id=kb_id,
+                    update_progress=update_progress,
+                    embedding_config=None,  # DOTS 也通过 RAGFlow batch API 获取嵌入模型
+                    parser_config=parser_config  # 传递完整的解析器配置
+                )
             
-            if is_dev_mode():
-                # === 开发模式：跳过 MinerU 处理，直接使用现有 markdown 文件 ===
-                print(f"[Parser-INFO] 开发模式已启用：跳过 MinerU 处理，直接使用现有 markdown 文件")
+            if selected_engine == 'mineru':
+                # === MinerU 解析路径（原有逻辑）===
+                print(f"[Parser-INFO] 使用 MinerU 处理文档")
+
+                # 检查是否启用开发模式
+                from .mineru_parse.utils import is_dev_mode
                 
-                # 使用现有的 markdown 文件路径
-                output_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'output')
-                md_file_path = os.path.join(output_dir, '12567a4e5ec411f0a42066fc51ac58de.md')
-                
-                if os.path.exists(md_file_path):
-                    print(f"[Parser-INFO] 找到测试 markdown 文件: {md_file_path}")
-                    update_progress(0.4, "跳过 MinerU 处理，使用现有 markdown 文件")
+                if is_dev_mode():
+                    # === 开发模式：跳过 MinerU 处理，直接使用现有 markdown 文件 ===
+                    print(f"[Parser-INFO] 开发模式已启用：跳过 MinerU 处理，直接使用现有 markdown 文件")
                     
-                    # 使用现有的 ragflow_build 逻辑处理 markdown
-                    from .mineru_parse.ragflow_build import create_ragflow_resources
+                    # 使用现有的 markdown 文件路径
+                    output_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'output')
+                    md_file_path = os.path.join(output_dir, '12567a4e5ec411f0a42066fc51ac58de.md')
                     
-                    # 假设 images 目录也在 output 目录下
-                    images_dir = os.path.join(output_dir, 'images')
-                    chunk_count = create_ragflow_resources(doc_id, kb_id, md_file_path, images_dir, update_progress)
-                    
-                    print(f"[Parser-INFO] 开发模式完成，生成 {chunk_count} 个块")
+                    if os.path.exists(md_file_path):
+                        print(f"[Parser-INFO] 找到测试 markdown 文件: {md_file_path}")
+                        update_progress(0.4, "跳过 MinerU 处理，使用现有 markdown 文件")
+                        
+                        # 使用现有的 ragflow_build 逻辑处理 markdown
+                        from .mineru_parse.ragflow_build import create_ragflow_resources
+                        
+                        # 假设 images 目录也在 output 目录下
+                        images_dir = os.path.join(output_dir, 'images')
+                        chunk_count = create_ragflow_resources(doc_id, kb_id, md_file_path, images_dir, update_progress)
+                        
+                        print(f"[Parser-INFO] 开发模式完成，生成 {chunk_count} 个块")
+                    else:
+                        print(f"[Parser-WARNING] 测试 markdown 文件不存在: {md_file_path}")
+                        print(f"[Parser-INFO] 可用的 output 文件:")
+                        if os.path.exists(output_dir):
+                            for f in os.listdir(output_dir):
+                                print(f"  - {f}")
+                        
+                        # 回退到错误状态
+                        chunk_count = 0
+                        update_progress(0.9, "测试 markdown 文件不存在")
                 else:
-                    print(f"[Parser-WARNING] 测试 markdown 文件不存在: {md_file_path}")
-                    print(f"[Parser-INFO] 可用的 output 文件:")
-                    if os.path.exists(output_dir):
-                        for f in os.listdir(output_dir):
-                            print(f"  - {f}")
-                    
-                    # 回退到错误状态
-                    chunk_count = 0
-                    update_progress(0.9, "测试 markdown 文件不存在")
-            else:
-                # === 生产模式：执行正常的 OCR 文档解析 ===
-                print(f"[Parser-INFO] 生产模式：执行 MinerU 处理")
-                from .mineru_parse.process_pdf import process_pdf_entry
-                chunk_count = process_pdf_entry(doc_id, temp_file_path, kb_id, update_progress)
+                    # === 生产模式：执行正常的 OCR 文档解析 ===
+                    print(f"[Parser-INFO] 生产模式：执行 MinerU 处理")
+                    from .mineru_parse.process_pdf import process_pdf_entry
+                    chunk_count = process_pdf_entry(doc_id, temp_file_path, kb_id, update_progress)
         
         # ======== 统一处理完成状态 ========
         process_duration = time.time() - start_time
-        final_message = "表格解析完成" if is_table_file else "文档解析完成"
+        
+        if is_table_file:
+            final_message = "表格解析完成"
+        else:
+            # 根据使用的解析引擎生成相应的完成消息
+            parser_id = doc_info.get('parser_id', 'mineru')
+            engine_name = _get_parser_engine(parser_id, parser_config).upper()
+            final_message = f"{engine_name} 文档解析完成"
 
         _update_document_progress(doc_id,  progress=1.0, run='3', chunk_count=chunk_count, process_duration=process_duration, message=final_message)
         

@@ -83,17 +83,11 @@ const UserManagementPage = () => {
     user: { priority: 5, color: '#d9d9d9' }, // 用户 - 灰色
   };
 
-  // 获取最高优先级角色
-  const getHighestPriorityRole = (
-    userRolesList: UserRole[],
-  ): UserRole | null => {
+  // 获取用户角色（每个用户只有一个角色）
+  const getUserRole = (userRolesList: UserRole[]): UserRole | null => {
     if (!userRolesList || userRolesList.length === 0) return null;
-
-    return userRolesList.reduce((highest, current) => {
-      const currentPriority = rolePriorityMap[current.code]?.priority || 999;
-      const highestPriority = rolePriorityMap[highest.code]?.priority || 999;
-      return currentPriority < highestPriority ? current : highest;
-    });
+    // 直接返回第一个角色，因为每个用户只能有一个角色
+    return userRolesList[0];
   };
   // 模拟用户数据
   // const mockUsers: UserData[] = [
@@ -147,7 +141,7 @@ const UserManagementPage = () => {
     setLoading(true);
     try {
       const values = searchForm.getFieldsValue();
-      const res = await request.get('/api/v1/users', {
+      const res = await request.get('/api/knowflow/v1/users', {
         params: {
           currentPage: pagination.current,
           size: pagination.pageSize,
@@ -165,11 +159,13 @@ const UserManagementPage = () => {
       await Promise.all(
         (list as UserData[]).map(async (u) => {
           try {
-            const r = await request.get(`/api/v1/rbac/users/${u.id}/roles`);
+            const r = await request.get(
+              `/api/knowflow/v1/rbac/users/${u.id}/roles`,
+            );
             const rolesList = r?.data?.data ?? r?.data?.roles ?? [];
-            const highestRole = getHighestPriorityRole(rolesList);
-            if (highestRole) {
-              rolesMap[u.id] = highestRole;
+            const userRole = getUserRole(rolesList);
+            if (userRole) {
+              rolesMap[u.id] = userRole;
             }
           } catch (e) {
             // 错误情况下不设置角色
@@ -210,7 +206,7 @@ const UserManagementPage = () => {
   const handleDeleteUser = async (userId: string) => {
     setLoading(true);
     try {
-      await request.delete(`/api/v1/users/${userId}`);
+      await request.delete(`/api/knowflow/v1/users/${userId}`);
       message.success('删除用户成功');
       await loadUserData();
     } catch (error) {
@@ -228,7 +224,9 @@ const UserManagementPage = () => {
     setLoading(true);
     try {
       await Promise.all(
-        selectedRowKeys.map((id) => request.delete(`/api/v1/users/${id}`)),
+        selectedRowKeys.map((id) =>
+          request.delete(`/api/knowflow/v1/users/${id}`),
+        ),
       );
       setSelectedRowKeys([]);
       message.success(`成功删除 ${selectedRowKeys.length} 个用户`);
@@ -251,12 +249,12 @@ const UserManagementPage = () => {
     setCurrentUserId(user.id);
     try {
       // 获取所有角色
-      const rolesRes = await request.get('/api/v1/rbac/roles');
+      const rolesRes = await request.get('/api/knowflow/v1/rbac/roles');
       setRoles(rolesRes.data.data || []);
 
       // 获取用户当前角色（兼容不同返回结构）
       const userRolesRes = await request.get(
-        `/api/v1/rbac/users/${user.id}/roles`,
+        `/api/knowflow/v1/rbac/users/${user.id}/roles`,
       );
       const rolesList =
         userRolesRes?.data?.data ?? userRolesRes?.data?.roles ?? [];
@@ -282,11 +280,14 @@ const UserManagementPage = () => {
       if (values.roleId) {
         const selectedRole = roles.find((role) => role.id === values.roleId);
         if (selectedRole) {
-          await request.post(`/api/v1/rbac/users/${currentUserId}/roles`, {
-            data: {
-              role_code: selectedRole.code,
+          await request.post(
+            `/api/knowflow/v1/rbac/users/${currentUserId}/roles`,
+            {
+              data: {
+                role_code: selectedRole.code,
+              },
             },
-          });
+          );
           message.success('角色分配成功');
           setRoleModalVisible(false);
           await loadUserData();
@@ -309,13 +310,13 @@ const UserManagementPage = () => {
       setLoading(true);
       if (editingUser) {
         if (editingUser.id) {
-          await request.put(`/api/v1/users/${editingUser.id}`, {
+          await request.put(`/api/knowflow/v1/users/${editingUser.id}`, {
             data: values,
           });
         }
         message.success('更新用户成功');
       } else {
-        await request.post('/api/v1/users', { data: values });
+        await request.post('/api/knowflow/v1/users', { data: values });
         message.success('创建用户成功');
       }
       setUserModalVisible(false);
@@ -331,9 +332,12 @@ const UserManagementPage = () => {
     try {
       const values = await passwordForm.validateFields();
       setLoading(true);
-      await request.put(`/api/v1/users/${currentUserId}/reset-password`, {
-        data: { password: values.password },
-      });
+      await request.put(
+        `/api/knowflow/v1/users/${currentUserId}/reset-password`,
+        {
+          data: { password: values.password },
+        },
+      );
       message.success('重置密码成功');
       setResetPasswordModalVisible(false);
     } catch (error) {
@@ -354,19 +358,19 @@ const UserManagementPage = () => {
       title: '邮箱',
       dataIndex: 'email',
       key: 'email',
-      width: 200,
+      width: 180,
     },
     {
       title: '创建时间',
       dataIndex: 'createTime',
       key: 'createTime',
-      width: 150,
+      width: 100,
     },
     {
       title: '更新时间',
       dataIndex: 'updateTime',
       key: 'updateTime',
-      width: 150,
+      width: 120,
     },
     {
       title: '角色',
@@ -389,15 +393,8 @@ const UserManagementPage = () => {
       key: 'action',
       fixed: 'right' as const,
       width: 320,
-      align: 'right' as const,
-      onHeaderCell: () => ({
-        style: { paddingRight: '30px' },
-      }),
       render: (_: any, record: UserData) => (
-        <Space
-          size="small"
-          style={{ justifyContent: 'flex-end', display: 'flex' }}
-        >
+        <Space size={4}>
           <Button
             type="link"
             size="small"
@@ -420,7 +417,7 @@ const UserManagementPage = () => {
             icon={<UserOutlined />}
             onClick={() => handleAssignRole(record)}
           >
-            分配角色
+            角色
           </Button>
           <Popconfirm
             title="确定删除这个用户吗？"
@@ -505,7 +502,7 @@ const UserManagementPage = () => {
           rowKey="id"
           loading={loading}
           pagination={false}
-          scroll={{ x: 1040 }}
+          scroll={{ x: 940 }}
           rowSelection={{
             selectedRowKeys,
             onChange: (selectedRowKeys: React.Key[]) =>
@@ -542,11 +539,13 @@ const UserManagementPage = () => {
             rules={[{ required: true, message: '请选择一个角色' }]}
           >
             <Select placeholder="请选择角色" style={{ width: '100%' }}>
-              {roles.map((role: any) => (
-                <Select.Option key={role.id} value={role.id}>
-                  {role.name} - {role.description}
-                </Select.Option>
-              ))}
+              {roles
+                .filter((role: any) => role.code !== 'super_admin')
+                .map((role: any) => (
+                  <Select.Option key={role.id} value={role.id}>
+                    {role.name} - {role.description}
+                  </Select.Option>
+                ))}
             </Select>
           </Form.Item>
         </Form>

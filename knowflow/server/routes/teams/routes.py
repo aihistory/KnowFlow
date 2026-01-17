@@ -1,4 +1,4 @@
-from flask import jsonify, request
+from flask import jsonify, request, g
 from services.teams.service import (
     get_teams_with_pagination, get_team_by_id, create_team, update_team, delete_team,
     get_team_members, add_team_member, remove_team_member
@@ -17,7 +17,9 @@ def get_teams():
         team_name = request.args.get('name', '')
         
         # 调用服务函数获取分页和筛选后的团队数据
-        teams, total = get_teams_with_pagination(current_page, page_size, team_name)
+        current_user_id = getattr(g, 'current_user_id', None)
+        user_role = getattr(g, 'current_user_role', None)
+        teams, total = get_teams_with_pagination(current_page, page_size, team_name, current_user_id, user_role)
         
         # 返回符合前端期望格式的数据
         return jsonify({
@@ -68,17 +70,21 @@ def create_team_route():
                 "message": "请求数据不能为空"
             }), 400
         
+        # 获取当前用户信息
+        current_user_id = getattr(g, 'current_user_id', None)
+        if not current_user_id:
+            return jsonify({"code": 401, "message": "未授权访问"}), 401
+        
         name = data.get('name')
-        owner_id = data.get('owner_id')
         description = data.get('description', '')
         
-        if not name or not owner_id:
+        if not name:
             return jsonify({
                 "code": 400,
-                "message": "团队名称和所有者ID不能为空"
+                "message": "团队名称不能为空"
             }), 400
         
-        team_id = create_team(name=name, owner_id=owner_id, description=description)
+        team_id = create_team(name=name, owner_id=current_user_id, description=description, created_by=current_user_id)
         
         if team_id:
             return jsonify({

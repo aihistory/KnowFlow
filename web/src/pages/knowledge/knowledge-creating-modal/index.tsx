@@ -8,7 +8,7 @@ type FieldType = {
 
 interface IProps extends Omit<IModalManagerChildrenProps, 'showModal'> {
   loading: boolean;
-  onOk: (name: string) => void;
+  onOk: (name: string, parserMethod?: string) => void;
 }
 
 const KnowledgeCreatingModal = ({

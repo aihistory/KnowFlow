@@ -37,6 +37,8 @@ interface FileData {
   kb_id?: string;
   location?: string;
   create_time?: string;
+  created_by?: string;
+  created_by_name?: string;
   status?: 'uploading' | 'success' | 'error';
   percent?: number;
 }
@@ -64,7 +66,7 @@ const FileManagementPage = () => {
   const loadFileData = async () => {
     setLoading(true);
     try {
-      const res = await request.get('/api/v1/files', {
+      const res = await request.get('/api/knowflow/v1/files', {
         params: {
           currentPage: pagination.current,
           size: pagination.pageSize,
@@ -113,7 +115,7 @@ const FileManagementPage = () => {
         }
       });
 
-      await request.post('/api/v1/files/upload', {
+      await request.post('/api/knowflow/v1/files/upload', {
         data: formData,
         // 不要手动加 Content-Type，浏览器会自动生成
       });
@@ -133,12 +135,15 @@ const FileManagementPage = () => {
     try {
       message.loading({ content: '正在准备下载...', key: 'download' });
       // fetch blob
-      const response = await fetch(`/api/v1/files/${file.id}/download`, {
-        method: 'GET',
-        headers: {
-          Accept: 'application/octet-stream',
+      const response = await fetch(
+        `/api/knowflow/v1/files/${file.id}/download`,
+        {
+          method: 'GET',
+          headers: {
+            Accept: 'application/octet-stream',
+          },
         },
-      });
+      );
       if (!response.ok) {
         throw new Error(
           `服务器返回错误: ${response.status} ${response.statusText}`,
@@ -174,7 +179,7 @@ const FileManagementPage = () => {
   const handleDeleteFile = async (fileId: string) => {
     setLoading(true);
     try {
-      await request.delete(`/api/v1/files/${fileId}`);
+      await request.delete(`/api/knowflow/v1/files/${fileId}`);
       message.success('删除成功');
       await loadFileData();
     } catch (error) {
@@ -192,7 +197,7 @@ const FileManagementPage = () => {
 
     setLoading(true);
     try {
-      await request.delete('/api/v1/files/batch', {
+      await request.delete('/api/knowflow/v1/files/batch', {
         data: { ids: selectedRowKeys },
       });
       setSelectedRowKeys([]);
@@ -270,6 +275,13 @@ const FileManagementPage = () => {
           )}
         </Space>
       ),
+    },
+    {
+      title: '创建人',
+      dataIndex: 'created_by_name',
+      key: 'created_by_name',
+      width: 120,
+      render: (name: string) => name || '-',
     },
     {
       title: '大小',
@@ -416,7 +428,7 @@ const FileManagementPage = () => {
           rowKey="id"
           loading={loading}
           pagination={false}
-          scroll={{ x: 1000 }}
+          scroll={{ x: 1120 }}
           rowSelection={{
             selectedRowKeys,
             onChange: (selectedRowKeys: React.Key[]) =>

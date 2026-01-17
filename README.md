@@ -6,9 +6,11 @@
 
 [![Star History Chart](https://api.star-history.com/svg?repos=weizxfree/KnowFlow&type=Date)](https://star-history.com/#weizxfree/KnowFlow&Date)
 
-🌐 **官方网站**: [https://www.knowflowchat.cn/](https://www.knowflowchat.cn)
+🌐 **官方网站**: [https://www.knowflowchat.cn](https://www.knowflowchat.cn)
 
 📺 **B站视频**: [https://www.bilibili.com/video/BV1Vfg8zDEUf/](https://www.bilibili.com/video/BV1Vfg8zDEUf/)
+
+🌐 **微信公众号**：KnowFlow 企业知识库
 
 ---
 
@@ -21,6 +23,40 @@
 - **RAGFlow 企业落地的最后一公里**：解决从开源到生产的关键差距
 - **插件化增强平台**：通过独立服务方式扩展 RAGFlow 功能
 - **企业级知识管理系统**：提供完整的用户权限、团队协作、数据安全保障
+
+
+## 📦 版本差异
+
+### 社区版 vs 商业版
+
+| 功能特性 | 社区版 (开源) | 商业版 |
+|---------|-------------|--------|
+| **基础功能** | ✅  | ✅  |
+| **MinerU 解析** | ✅ 支持老版本  | ✅ 支持 MinerU 最新版本镜像 |
+| **小红书 Dots 解析** | ❌ | ✅  |
+| **PaddleOCR-VL 解析** | ❌ | ✅  |
+| **多模态图片理解** | ❌ | ✅  |
+| **RAG 评估系统** | ❌ | ✅  |
+| **权限管理** | RBAC 简略版 | ✅ RBAC 完整版本，额外作用于agent、聊天助手、文件等 |
+| **分块策略** | 正则、语义、标题、父子分块 | ✅ 解析分块全面优化，新增标题层级切割以及标题自动补充、父子分块支持编辑 |
+| **版本兼容** | 适配 v0.20.1 | ✅ 适配 RAGFlow v0.20.5 |
+| **企业集成** | ✅ 企业微信集成 | ✅ Dify 深度集成 |
+| **高级分析** | ❌ | ✅ 使用统计分析 |
+| **技术支持** | 🔧 社区支持 | 🔧 专业技术支持 |
+| **商业授权** | ❌ | ✅ 商业使用许可 |
+
+### 商业版增强特性
+
+- **RBAC 权限管理**：基于角色的访问控制，精细化权限分配
+- **Markdown**：智能分块策略，含图片理解，分块标题补充，提升检索精度和问答质量
+- **版本兼容**：适配最新 RAGFlow v0.20.5，持续更新支持
+- **企业级安全**：数据加密、审计日志、合规性管理
+- **性能优化**：专业性能调优，支持大规模并发
+- **定制开发**：根据企业需求定制功能模块
+- **专业支持**：根据企业需要，提供增值技术支持，快速响应
+
+> 💡 **获取商业版**：微信联系 `skycode007`（备注"商业版咨询"）
+
 
 ### 🏗️ 系统架构
 
@@ -159,7 +195,11 @@ graph TB
 - 至少 8GB 内存
 - 可选：NVIDIA GPU + nvidia-container-toolkit（GPU加速）
 
-#### 1. 启动 MinerU 服务
+#### 1. 启动文档解析服务
+
+可以在 MinerU 和 Dots 服务中任选一种，推荐 Dots ，MarkDown 文件标题识别效果更好。
+
+##### 1. 启动 MinerU 镜像
 
 基于 SGLang 的 MinerU 完全离线部署方案，镜像包含所有必要的模型文件，无需运行时下载：
 
@@ -186,19 +226,6 @@ docker run -d \
     zxwei/mineru-api-full:v2.1.11
 ```
 
-**带数据卷挂载的部署**
-```bash
-docker run -d \
-    --gpus all \
-    -p 8888:8888 \
-    -p 30000:30000 \
-    -v $(pwd)/data:/app/data \
-    -v $(pwd)/output:/app/output \
-    -e MINERU_MODEL_SOURCE=local \
-    -e SGLANG_MEM_FRACTION_STATIC=0.8 \
-    --name mineru-sglang \
-    zxwei/mineru-api-full:v2.1.11
-```
 
 > 💡 **镜像特性：**
 > - **完全离线部署**: 所有模型文件已预下载并打包在镜像中
@@ -208,7 +235,7 @@ docker run -d \
 > - **高性能**: GPU 加速推理，支持 CUDA 12.4
 > - **智能启动**: 支持环境变量配置，灵活的参数调优
 
-#### 2. MinerU 服务地址配置
+##### 2. MinerU 服务地址配置
 
 在 `/knowflow/server/services/config/settings.yaml` 配置文件中，配置 MinerU 服务地址以及解析模式:
 
@@ -233,7 +260,47 @@ docker run -d \
 ```
 
 
-#### 3. 启动容器，开始使用
+##### 1. 启动 Dots 镜像 
+
+进入到 `knowflow/dots` 目录下, 执行拉取 Dots 镜像脚本，该脚本可以自动下载模型以及下载 Dots 镜像。
+
+```bash
+cd knowflow/dots
+./deploy.sh
+```
+
+默认端口是 8000，如有冲突，可以手动调整 compose 文件。
+
+
+##### 2. Dots 服务地址配置
+
+在 `/knowflow/server/services/config/settings.yaml` 配置文件中，配置 Dots 服务地址以及解析模式:
+
+```bash
+dots:
+  # VLLM 服务配置
+  vllm:
+    # DOTS OCR 服务地址
+    # 远程服务示例: http://{ip}:8000
+    # 本地服务示例: http://localhost:8000
+    url: "http://localhost:8000"
+    
+    # 模型名称（根据部署配置调整）
+    model_name: "dotsocr-model"
+    
+    # 请求超时时间（秒）
+    timeout: 300
+    
+    # 生成参数
+    temperature: 0.1
+    top_p: 1.0
+    max_completion_tokens: 16384
+    
+```
+
+
+
+#### 2. 启动 KnowFlow 容器，开始使用
 
 1. 拉取本项目代码：
 
@@ -255,7 +322,7 @@ docker compose -f docker-compose.yml up -d
 
 访问地址：`http://服务器IP:80`，进入 KnowFlow 首页
 
-#### 4. 默认管理员账户
+#### 3. 默认管理员账户
 
 
 系统启动后，请使用以下默认超级管理员账户登录：
@@ -408,6 +475,8 @@ pnpm dev
 1. **文档结构分块**：基于文档原生结构进行智能分块
 2. **按标题分块**：根据标题层级自动划分内容块
 3. **RAGFlow 原分块**：保持与官方完全一致的分块规则
+4. **父子分块**：父块较大用于补充上下文，子块用于向量检索
+5. **DOTS 解析**：先进的文档智能解析引擎，支持复杂版式和多模态内容
 
 <div align="center">
   <img src="knowflow/assets/mulcontent.png" alt="图文混排示例">
@@ -568,6 +637,20 @@ mineru:
       server_url: "http://localhost:30000"
 ```
 
+#### DOTS 解析使用
+
+**配置 DOTS 解析**
+1. 在知识库设置中选择"DOTS"解析方式
+2. 支持复杂文档版式和多模态内容理解
+3. 提供更准确的文档结构识别
+
+**使用步骤**
+```bash
+# 1. 创建知识库时选择 DOTS 解析器
+# 2. 上传文档自动使用 DOTS 解析
+# 3. 获得更精准的图文混排输出
+```
+
 #### API 使用示例
 
 **健康检查**
@@ -578,9 +661,9 @@ curl http://localhost:8888/health
 **文档解析 API**
 ```bash
 # 上传文档进行解析
-curl -X POST "http://localhost:8888/parse" \
+curl -X POST "http://localhost:8888/file_parse" \
      -F "file=@document.pdf" \
-     -F "mode=pipeline"
+     -F "backend=pipeline"
 ```
 
 
@@ -820,6 +903,9 @@ AGPL-3.0 允许商业使用，但有重要约束：
 ### 📢 更新信息
 
 项目持续更新中，更新日志会在微信公众号 **[KnowFlow 企业知识库]** 发布，欢迎关注。
+
+[![Star History Chart](https://api.star-history.com/svg?repos=weizxfree/KnowFlow&type=Date)](https://star-history.com/#weizxfree/KnowFlow&Date)
+
 
 ### 🙏 鸣谢
 
